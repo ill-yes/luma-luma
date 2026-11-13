@@ -14,6 +14,26 @@ enum PowerRule: String, CaseIterable {
     }
 }
 
+extension DisplayScope {
+    var title: String {
+        switch self {
+        case .all: "All displays"
+        case .builtIn: "Built-in display"
+        case .external: "External displays"
+        }
+    }
+}
+
+extension BoostRegion {
+    var title: String {
+        switch self {
+        case .full: "Entire display"
+        case .split: "Half display (compare)"
+        case .frontWindow: "Front window"
+        }
+    }
+}
+
 @MainActor
 final class Preferences: ObservableObject {
     @Published var boost: Double { didSet { defaults.set(boost, forKey: "boost") } }
@@ -29,6 +49,9 @@ final class Preferences: ObservableObject {
     @Published var batteryThreshold: Int { didSet { defaults.set(batteryThreshold, forKey: "batteryThreshold") } }
     @Published var nativeBrightnessKeys: Bool {
         didSet { defaults.set(nativeBrightnessKeys, forKey: "nativeBrightnessKeys") }
+    }
+    @Published var showBrightnessIndicator: Bool {
+        didSet { defaults.set(showBrightnessIndicator, forKey: "showBrightnessIndicator") }
     }
     @Published var syncHardwareBrightness: Bool {
         didSet { defaults.set(syncHardwareBrightness, forKey: "syncHardwareBrightness") }
@@ -56,6 +79,7 @@ final class Preferences: ObservableObject {
         powerRule = defaults.string(forKey: "powerRule").flatMap(PowerRule.init(rawValue:)) ?? .manual
         batteryThreshold = min(100, max(1, defaults.object(forKey: "batteryThreshold") as? Int ?? 40))
         nativeBrightnessKeys = defaults.bool(forKey: "nativeBrightnessKeys")
+        showBrightnessIndicator = defaults.object(forKey: "showBrightnessIndicator") as? Bool ?? true
         syncHardwareBrightness = defaults.bool(forKey: "syncHardwareBrightness")
         shortcuts = defaults.data(forKey: "shortcuts").flatMap {
             try? JSONDecoder().decode([ShortcutAction: KeyBinding].self, from: $0)
@@ -120,14 +144,14 @@ struct PreferencesView: View {
         Form {
             Section("Coverage") {
                 Picker("Displays", selection: $preferences.scope) {
-                    Text("All displays").tag(DisplayScope.all)
-                    Text("Built-in display").tag(DisplayScope.builtIn)
-                    Text("External displays").tag(DisplayScope.external)
+                    ForEach(DisplayScope.allCases) { scope in
+                        Text(scope.title).tag(scope)
+                    }
                 }
                 Picker("Boost area", selection: $preferences.region) {
-                    Text("Entire display").tag(BoostRegion.full)
-                    Text("Half display (compare)").tag(BoostRegion.split)
-                    Text("Front window").tag(BoostRegion.frontWindow)
+                    ForEach(BoostRegion.allCases) { region in
+                        Text(region.title).tag(region)
+                    }
                 }
             }
 
@@ -173,6 +197,10 @@ struct PreferencesView: View {
                 }
             } footer: {
                 Text("To adjust an active effect with the display brightness keys, allow Luma Luma in System Settings › Privacy & Security › Accessibility, then turn this option off and back on.")
+            }
+
+            Section {
+                Toggle("Show brightness indicator", isOn: $preferences.showBrightnessIndicator)
             }
         }
         .formStyle(.grouped)

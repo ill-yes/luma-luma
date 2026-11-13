@@ -15,18 +15,29 @@ struct StatusView: View {
 
     private var caption: String {
         if controller.paused { return "Paused while the display is inactive" }
-        if controller.report?.displayCount == 0 { return "No displays match your selection" }
-        if controller.mode == .boost {
-            if controller.report?.edrDisplayCount == 0 { return "No HDR display available" }
-            if (controller.report?.currentHeadroom ?? 1) <= 1.01 { return "Waiting for HDR headroom" }
-            return "HDR display brightness"
+        if controller.mode != .off, controller.report?.displayCount == 0 {
+            return "No displays match your selection"
         }
         switch controller.mode {
         case .off: return "Standard display brightness"
         case .eclipse: return "Extra dimming"
         case .ring: return "Camera fill light"
-        case .boost: return "HDR display brightness"
+        case .boost: return boostCaption
         }
+    }
+
+    private var boostCaption: String {
+        guard preferences.boost > 0 else { return "Boost set to zero" }
+        guard let report = controller.report else { return "Starting HDR boost" }
+        if report.edrDisplayCount == 0 { return "No HDR display available" }
+        if report.targetBoostDisplayCount == 0 { return "Waiting for a frontmost window" }
+        if report.hasPendingBoost && report.activeBoostDisplayCount == 0 { return "Starting HDR boost" }
+        if report.activeBoostDisplayCount == 0 { return "HDR renderer unavailable" }
+        if report.currentHeadroom <= 1.01 { return "macOS is limiting HDR headroom" }
+        if report.activeBoostDisplayCount < report.targetBoostDisplayCount {
+            return "HDR boost on some selected displays"
+        }
+        return "HDR display brightness"
     }
 
     var body: some View {
@@ -72,9 +83,9 @@ struct StatusView: View {
             case .boost:
                 slider("Boost", value: $preferences.boost, range: 0...1)
                 Picker("Area", selection: $preferences.region) {
-                    Text("Entire display").tag(BoostRegion.full)
-                    Text("Side-by-side comparison").tag(BoostRegion.split)
-                    Text("Frontmost window").tag(BoostRegion.frontWindow)
+                    ForEach(BoostRegion.allCases) { region in
+                        Text(region.title).tag(region)
+                    }
                 }
             case .eclipse:
                 slider("Dimming", value: $preferences.dim, range: 0...0.95)

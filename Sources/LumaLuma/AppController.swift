@@ -39,6 +39,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private let log = Logger(subsystem: "dev.illyes.lumaluma", category: "display")
     private let renderer = DisplayRenderer()
+    private var brightnessIndicator: BrightnessIndicator?
     private lazy var hardware = AppleBrightness()
     private lazy var shortcuts = ShortcutController(
         onAction: { [weak self] action in self?.perform(action) },
@@ -66,6 +67,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var pendingURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        renderer.onBoostStateChanged = { [weak self] in self?.queueRefresh() }
         installStatusItem()
         installApplicationMenu()
         installNotifications()
@@ -95,12 +97,15 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ready = false
         tick?.invalidate()
         if let powerSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSource, .commonModes)
         }
         preferenceChanges?.cancel()
         shortcuts.stop()
+        brightnessIndicator?.hide()
+        renderer.onBoostStateChanged = nil
         renderer.clear()
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -135,7 +140,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         mode = next
         log.info("Selected mode \(next.rawValue, privacy: .public)")
         updateStatusItem()
-        refreshDisplays()
+        queueRefresh()
         updateRefreshTimer()
     }
 
@@ -163,14 +168,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     @objc func showPreferences() {
         popover?.performClose(nil)
         if preferencesWindow == nil {
-            let content = NSHostingController(rootView: PreferencesHost(controller: self))
-            let window = NSWindow(contentViewController: content)
-            window.title = "Luma Luma Settings"
-            window.styleMask = [.titled, .closable, .miniaturizable]
-            window.level = .statusBar
-            window.isReleasedWhenClosed = false
-            window.center()
-            preferencesWindow = window
+            preferencesWindow = makeWindow(title: "Luma Luma Settings", style: [.titled, .closable, .miniaturizable]) {
+                PreferencesHost(controller: self)
+            }
         }
         updateLoginStatus()
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -180,17 +180,26 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     @objc func showControls() {
         popover?.performClose(nil)
         if controlsWindow == nil {
-            let content = NSHostingController(rootView: StatusView(controller: self, preferences: preferences))
-            let window = NSWindow(contentViewController: content)
-            window.title = "Luma Luma"
-            window.styleMask = [.titled, .closable]
-            window.level = .statusBar
-            window.isReleasedWhenClosed = false
-            window.center()
-            controlsWindow = window
+            controlsWindow = makeWindow(title: "Luma Luma", style: [.titled, .closable]) {
+                StatusView(controller: self, preferences: preferences)
+            }
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
         controlsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeWindow<Content: View>(
+        title: String,
+        style: NSWindow.StyleMask,
+        content: () -> Content
+    ) -> NSWindow {
+        let window = NSWindow(contentViewController: NSHostingController(rootView: content()))
+        window.title = title
+        window.styleMask = style
+        window.level = .statusBar
+        window.isReleasedWhenClosed = false
+        window.center()
+        return window
     }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
@@ -289,6 +298,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             error = [error, missing].compactMap { $0 }.joined(separator: " ")
         }
         if error != shortcutError { shortcutError = error }
+        if !preferences.showBrightnessIndicator { brightnessIndicator?.hide() }
         let ruleChanged = previousRule != preferences.powerRule || previousThreshold != preferences.batteryThreshold
         previousRule = preferences.powerRule
         previousThreshold = preferences.batteryThreshold
@@ -299,7 +309,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if initial, preferences.powerRule == .manual, preferences.startEnabled, mode == .off {
             select(.boost)
         }
-        refreshDisplays()
+        queueRefresh()
         updateRefreshTimer()
     }
 
@@ -338,7 +348,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func refreshDisplays() {
-        guard !paused else { return }
+        guard ready, !paused else { return }
         let rendered = renderer.apply(DisplayRenderSettings(
             boost: mode == .boost ? preferences.boost : 0,
             dim: mode == .eclipse ? preferences.dim : 0,
@@ -350,12 +360,12 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         ))
         if rendered != report {
             report = rendered
-            log.info("Mode \(self.mode.rawValue, privacy: .public); selected displays \(rendered.displayCount); EDR displays \(rendered.edrDisplayCount); headroom \(rendered.currentHeadroom, format: .fixed(precision: 2)) / \(rendered.potentialHeadroom, format: .fixed(precision: 2))")
+            log.info("Mode \(self.mode.rawValue, privacy: .public); selected displays \(rendered.displayCount); rendered boost \(rendered.activeBoostDisplayCount) / \(rendered.targetBoostDisplayCount); headroom \(rendered.currentHeadroom, format: .fixed(precision: 2)) / \(rendered.potentialHeadroom, format: .fixed(precision: 2))")
         }
     }
 
     private func queueRefresh() {
-        guard !renderingQueued else { return }
+        guard ready, !renderingQueued else { return }
         renderingQueued = true
         Task { @MainActor in
             renderingQueued = false
@@ -366,18 +376,36 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private func perform(_ action: ShortcutAction) {
         switch action {
         case .toggle: toggle()
-        case .increase: changeLevel(by: 0.0625)
-        case .decrease: changeLevel(by: -0.0625)
+        case .increase, .decrease:
+            guard !paused,
+                  let screen = NSScreen.screens(in: preferences.scope).first?.screen
+            else { return }
+            changeLevel(by: action == .increase ? 0.0625 : -0.0625, on: screen)
         }
     }
 
-    private func changeLevel(by amount: Double) {
+    private func changeLevel(by amount: Double, on screen: NSScreen) {
+        let value: Double
         switch mode {
         case .off:
-            if amount > 0 { select(.boost) }
-        case .boost: preferences.boost = min(1, max(0, preferences.boost + amount))
-        case .eclipse: preferences.dim = min(0.95, max(0, preferences.dim - amount))
-        case .ring: preferences.ringStrength = min(1, max(0, preferences.ringStrength + amount))
+            guard amount > 0 else { return }
+            select(.boost)
+            value = preferences.boost
+        case .boost:
+            value = min(1, max(0, preferences.boost + amount))
+            if value != preferences.boost { preferences.boost = value }
+        case .eclipse:
+            let dim = min(0.95, max(0, preferences.dim - amount))
+            if dim != preferences.dim { preferences.dim = dim }
+            value = 1 - dim
+        case .ring:
+            value = min(1, max(0, preferences.ringStrength + amount))
+            if value != preferences.ringStrength { preferences.ringStrength = value }
+        }
+        if preferences.showBrightnessIndicator {
+            let indicator = brightnessIndicator ?? BrightnessIndicator()
+            brightnessIndicator = indicator
+            indicator.show(label: mode.title, symbol: mode.symbol, value: value, on: screen)
         }
     }
 
@@ -385,34 +413,24 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         guard !paused else { return false }
         let step = fine ? 1.0 / 64 : 1.0 / 16
         let change = increase ? step : -step
-        let selected = NSScreen.screens.compactMap { screen -> CGDirectDisplayID? in
-            guard let display = screen.lumaLumaDisplayID else { return nil }
-            let internalDisplay = CGDisplayIsBuiltin(display) != 0
-            switch preferences.scope {
-            case .all: return display
-            case .builtIn: return internalDisplay ? display : nil
-            case .external: return internalDisplay ? nil : display
-            }
+        let selected = NSScreen.screens(in: preferences.scope)
+        guard let screen = selected.first?.screen else { return false }
+        let controllable = selected.compactMap { display in
+            hardware.brightness(of: display.id).map { (display.id, $0) }
         }
-        guard !selected.isEmpty else { return false }
-        let controllable = selected.compactMap { id in hardware.brightness(of: id).map { (id, $0) } }
         let level = controllable.first?.1
         if preferences.nativeBrightnessKeys {
             switch mode {
-            case .boost where (report?.edrDisplayCount ?? 0) > 0:
-                if increase, (level ?? 1) >= 0.999 {
-                    changeLevel(by: change)
-                    return true
-                }
-                if !increase, preferences.boost > 0 {
-                    changeLevel(by: change)
-                    return true
-                }
+            case .boost where (report?.edrDisplayCount ?? 0) > 0
+                && (preferences.region != .frontWindow || (report?.targetBoostDisplayCount ?? 0) > 0):
+                guard increase ? (level ?? 0) >= 0.999 : preferences.boost > 0 else { break }
+                changeLevel(by: change, on: screen)
+                return true
             case .eclipse where preferences.dim > 0 || (!increase && (level ?? 1) <= 0.001):
-                changeLevel(by: change)
+                changeLevel(by: change, on: screen)
                 return true
             case .ring:
-                changeLevel(by: change)
+                changeLevel(by: change, on: screen)
                 return true
             default: break
             }
@@ -462,6 +480,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         updateRefreshTimer()
         if paused {
             renderer.clear()
+            brightnessIndicator?.hide()
         } else {
             refreshAutomation()
             queueRefresh()

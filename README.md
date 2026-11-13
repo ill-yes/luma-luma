@@ -25,7 +25,7 @@ The build produces a locally ad-hoc-signed app for the Mac it was built on. Move
 
 macOS sets the available HDR headroom according to the display, brightness preset, power and temperature. The slider specifies a share of the available boost, capped at a 3× request to the compositor. It does not report nits. Luma Luma suspends its effects when displays sleep or the session locks. Quitting removes all overlays.
 
-Custom keyboard shortcuts use Carbon global hotkeys. To use the native brightness keys or hardware brightness sync, enable the corresponding option and grant Luma Luma Accessibility access in System Settings. Hardware sync uses the macOS DisplayServices interface when at least two selected Apple displays report backlight control. DDC monitors are outside this feature's scope.
+Custom keyboard shortcuts use Carbon global hotkeys. A transient brightness indicator shows keyboard adjustments and can be switched off in **Settings → Shortcuts**. To use the native brightness keys or hardware brightness sync, enable the corresponding option and grant Luma Luma Accessibility access in System Settings. With Boost selected, the brighter key can continue into HDR when the Apple backlight reaches its SDR maximum, including during a held press. Hardware sync uses the macOS DisplayServices interface when at least two selected Apple displays report backlight control. DDC monitors are outside this feature's scope.
 
 In macOS Shortcuts, use the built-in **Open URLs** action with `lumaluma://on`, `lumaluma://off`, or `lumaluma://toggle`. The app bundle registers these three commands with macOS.
 

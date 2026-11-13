@@ -34,6 +34,11 @@ final class ShortcutController {
         let reference: EventHotKeyRef
     }
 
+    private enum BrightnessPress {
+        case forwarded
+        case consumed
+    }
+
     private let onAction: (ShortcutAction) -> Void
     private let onBrightnessKey: (Bool, Bool) -> Bool
     private var registrations: [ShortcutAction: Registration] = [:]
@@ -42,7 +47,7 @@ final class ShortcutController {
     private var nextID: UInt32 = 1
     private var brightnessTap: CFMachPort?
     private var brightnessSource: CFRunLoopSource?
-    private var consumedBrightnessKeys: Set<Int32> = []
+    private var brightnessPresses: [Int32: BrightnessPress] = [:]
 
     init(
         onAction: @escaping (ShortcutAction) -> Void,
@@ -209,7 +214,7 @@ final class ShortcutController {
     }
 
     private func tapDisabled(timedOut: Bool) {
-        consumedBrightnessKeys.removeAll()
+        brightnessPresses.removeAll()
         if timedOut, AXIsProcessTrusted(), let brightnessTap {
             CGEvent.tapEnable(tap: brightnessTap, enable: true)
         }
@@ -225,32 +230,43 @@ final class ShortcutController {
             CFMachPortInvalidate(brightnessTap)
             self.brightnessTap = nil
         }
-        consumedBrightnessKeys.removeAll()
+        brightnessPresses.removeAll()
     }
 
     private func handleBrightnessKey(
         _ key: Int32, state: UInt32, repeatPress: Bool, modifiers: NSEvent.ModifierFlags
     ) -> Bool {
         if state == UInt32(NX_KEYUP) {
-            return consumedBrightnessKeys.remove(key) != nil
+            return brightnessPresses.removeValue(forKey: key) == .consumed
         }
         guard state == UInt32(NX_KEYDOWN) else { return false }
 
-        let plain = modifiers.isEmpty
+        let increase = key == NX_KEYTYPE_BRIGHTNESS_UP
         let fine = modifiers == [.option, .shift]
+        let supportedModifiers = modifiers.isEmpty || fine
         if repeatPress {
-            guard consumedBrightnessKeys.contains(key) else { return false }
-            if plain || fine {
-                _ = onBrightnessKey(key == NX_KEYTYPE_BRIGHTNESS_UP, fine)
+            switch brightnessPresses[key] {
+            case .consumed:
+                if supportedModifiers { _ = onBrightnessKey(increase, fine) }
+                return true
+            case .forwarded:
+                // macOS saw the initial press and still needs its release.
+                // Take over individual repeats once the system brightness reaches its limit.
+                return supportedModifiers && onBrightnessKey(increase, fine)
+            case nil:
+                return false
             }
+        }
+        brightnessPresses.removeValue(forKey: key)
+        guard supportedModifiers else { return false }
+        if onBrightnessKey(increase, fine) {
+            brightnessPresses[key] = .consumed
             return true
         }
-        consumedBrightnessKeys.remove(key)
-        guard plain || fine, onBrightnessKey(key == NX_KEYTYPE_BRIGHTNESS_UP, fine) else {
-            return false
+        if increase {
+            brightnessPresses[key] = .forwarded
         }
-        consumedBrightnessKeys.insert(key)
-        return true
+        return false
     }
 }
 

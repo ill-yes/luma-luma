@@ -31,65 +31,70 @@ struct DisplayRenderSettings {
 struct DisplayRenderReport: Equatable {
     let displayCount: Int
     let edrDisplayCount: Int
+    let targetBoostDisplayCount: Int
+    let activeBoostDisplayCount: Int
+    let hasPendingBoost: Bool
     let currentHeadroom: Double
     let potentialHeadroom: Double
 }
 
 @MainActor
 final class DisplayRenderer {
+    var onBoostStateChanged: (() -> Void)?
+
     private var overlays: [CGDirectDisplayID: ScreenOverlays] = [:]
     private lazy var metal = MetalContext()
 
     func apply(_ settings: DisplayRenderSettings) -> DisplayRenderReport {
-        let displays = NSScreen.screens.compactMap { screen -> (CGDirectDisplayID, NSScreen)? in
-            guard let id = screen.lumaLumaDisplayID else { return nil }
-            let isBuiltIn = CGDisplayIsBuiltin(id) != 0
-            switch settings.scope {
-            case .all: return (id, screen)
-            case .builtIn: return isBuiltIn ? (id, screen) : nil
-            case .external: return isBuiltIn ? nil : (id, screen)
-            }
-        }
+        let displays = NSScreen.screens(in: settings.scope)
         let boost = settings.boost.clamped(to: 0...1)
         let dim = settings.dim.clamped(to: 0...0.95)
         let ring = settings.ring.clamped(to: 0...1)
-        let activeDisplays = Set(displays.map(\.0))
-        let edrDisplays = displays.filter { $0.1.maximumPotentialExtendedDynamicRangeColorComponentValue > 1 }
-        let report = DisplayRenderReport(
+        let edrDisplays = displays.map(\.screen).filter { $0.maximumPotentialExtendedDynamicRangeColorComponentValue > 1 }
+        var targetBoostDisplayCount = 0
+
+        if boost > 0 || dim > 0 || ring > 0 {
+            let selected = Set(displays.map(\.id))
+            for id in overlays.keys.filter({ !selected.contains($0) }) {
+                overlays.removeValue(forKey: id)?.clear()
+            }
+
+            let frontWindow = boost > 0 && settings.region == .frontWindow ? frontWindowFrame() : nil
+            for (id, screen) in displays {
+                let overlay = overlays[id] ?? ScreenOverlays()
+                overlays[id] = overlay
+                let potential = Double(screen.maximumPotentialExtendedDynamicRangeColorComponentValue)
+                let current = Double(screen.maximumExtendedDynamicRangeColorComponentValue)
+                // Present an HDR frame to activate EDR before current headroom has risen above 1.
+                let available = current > 1.001 ? min(current, potential) : potential
+                let gain = 1 + max(0, min(available, 3) - 1) * boost
+                let frame = boostFrame(on: screen, region: settings.region, frontWindow: frontWindow)
+                let wantsBoost = gain > 1 && !frame.isEmpty
+                if wantsBoost { targetBoostDisplayCount += 1 }
+                overlay.setBoost(gain, frame: frame, metal: wantsBoost ? metal : nil) { [weak self] in
+                    self?.onBoostStateChanged?()
+                }
+                overlay.setDimming(dim, frame: screen.frame)
+                overlay.setRing(
+                    ring,
+                    width: settings.ringWidth.clamped(to: 0...1),
+                    warmth: settings.ringWarmth.clamped(to: 0...1),
+                    frame: screen.visibleFrame
+                )
+            }
+        } else {
+            clear()
+        }
+
+        return DisplayRenderReport(
             displayCount: displays.count,
             edrDisplayCount: edrDisplays.count,
-            currentHeadroom: edrDisplays.map { Double($0.1.maximumExtendedDynamicRangeColorComponentValue) }.max() ?? 1,
-            potentialHeadroom: edrDisplays.map { Double($0.1.maximumPotentialExtendedDynamicRangeColorComponentValue) }.max() ?? 1
+            targetBoostDisplayCount: targetBoostDisplayCount,
+            activeBoostDisplayCount: overlays.values.count { $0.boostState == .active },
+            hasPendingBoost: overlays.values.contains { $0.boostState == .pending },
+            currentHeadroom: edrDisplays.map { Double($0.maximumExtendedDynamicRangeColorComponentValue) }.max() ?? 1,
+            potentialHeadroom: edrDisplays.map { Double($0.maximumPotentialExtendedDynamicRangeColorComponentValue) }.max() ?? 1
         )
-
-        guard boost > 0 || dim > 0 || ring > 0 else {
-            clear()
-            return report
-        }
-        for id in overlays.keys.filter({ !activeDisplays.contains($0) }) {
-            overlays.removeValue(forKey: id)?.clear()
-        }
-
-        let frontWindow = boost > 0 && settings.region == .frontWindow ? frontWindowFrame() : nil
-        for (id, screen) in displays {
-            let overlay = overlays[id] ?? ScreenOverlays()
-            overlays[id] = overlay
-            let potential = Double(screen.maximumPotentialExtendedDynamicRangeColorComponentValue)
-            let current = Double(screen.maximumExtendedDynamicRangeColorComponentValue)
-            // Present an HDR frame to activate EDR before current headroom has risen above 1.
-            let available = current > 1.001 ? min(current, potential) : potential
-            let gain = 1 + max(0, min(available, 3) - 1) * boost
-            let frame = boostFrame(on: screen, region: settings.region, frontWindow: frontWindow)
-            overlay.setBoost(gain, frame: frame, metal: gain > 1 && !frame.isEmpty ? metal : nil)
-            overlay.setDimming(dim, frame: screen.frame)
-            overlay.setRing(
-                ring,
-                width: settings.ringWidth.clamped(to: 0...1),
-                warmth: settings.ringWarmth.clamped(to: 0...1),
-                frame: screen.visibleFrame
-            )
-        }
-        return report
     }
 
     func clear() {
@@ -146,13 +151,15 @@ private final class ScreenOverlays {
     private var dim: OverlayWindow?
     private var ring: RingOverlay?
 
-    func setBoost(_ gain: Double, frame: CGRect, metal: MetalContext?) {
-        guard gain > 1, !frame.isEmpty, let metal else {
-            boost?.window.orderOut(nil)
+    var boostState: BoostOverlay.State? { boost?.state }
+
+    func setBoost(_ gain: Double, frame: CGRect, metal: MetalContext?, onStateChanged: @escaping () -> Void) {
+        guard let metal else {
+            boost?.close()
             boost = nil
             return
         }
-        let overlay = boost ?? BoostOverlay(frame: frame, metal: metal)
+        let overlay = boost ?? BoostOverlay(frame: frame, metal: metal, onStateChanged: onStateChanged)
         boost = overlay
         overlay.window.show(in: frame)
         overlay.setGain(gain)
@@ -186,7 +193,7 @@ private final class ScreenOverlays {
     }
 
     func clear() {
-        boost?.window.orderOut(nil)
+        boost?.close()
         dim?.orderOut(nil)
         ring?.window.orderOut(nil)
     }
@@ -239,14 +246,29 @@ private struct MetalContext {
 
 @MainActor
 private final class BoostOverlay {
-    let window: OverlayWindow
-    private let metalLayer = CAMetalLayer()
-    private let queue: any MTLCommandQueue
-    private var requestedGain: Double?
+    enum State {
+        case pending
+        case active
+        case unavailable
+    }
 
-    init(frame: CGRect, metal: MetalContext) {
-        queue = metal.queue
+    private static let retryDelays: [Duration] = [
+        .milliseconds(150), .milliseconds(400), .seconds(2), .seconds(5), .seconds(15)
+    ]
+
+    let window: OverlayWindow
+    private(set) var state = State.pending
+    private let frames: BoostFrameRenderer
+    private let onStateChanged: () -> Void
+    private var requestedGain: Double?
+    private var rendering = false
+    private var failures = 0
+    private var retryTask: Task<Void, Never>?
+
+    init(frame: CGRect, metal: MetalContext, onStateChanged: @escaping () -> Void) {
+        self.onStateChanged = onStateChanged
         window = OverlayWindow(frame: frame, belowMenu: 3)
+        let metalLayer = CAMetalLayer()
         metalLayer.device = metal.device
         metalLayer.pixelFormat = .rgba16Float
         metalLayer.colorspace = metal.colorSpace
@@ -260,57 +282,115 @@ private final class BoostOverlay {
         view.layer = metalLayer
         view.wantsLayer = true
         window.contentView = view
+        frames = BoostFrameRenderer(layer: metalLayer, commandQueue: metal.queue)
     }
 
     func setGain(_ gain: Double) {
         guard requestedGain.map({ abs($0 - gain) > 0.001 }) ?? true else { return }
         requestedGain = gain
-        draw(gain, retries: 2)
+        draw()
     }
 
-    private func draw(_ gain: Double, retries: Int) {
-        guard requestedGain == gain, window.isVisible else { return }
-        guard let buffer = queue.makeCommandBuffer(),
-              let drawable = metalLayer.nextDrawable()
-        else {
-            retry(gain, remaining: retries)
-            return
-        }
+    func close() {
+        requestedGain = nil
+        retryTask?.cancel()
+        retryTask = nil
+        window.orderOut(nil)
+    }
 
-        let pass = MTLRenderPassDescriptor()
-        guard let color = pass.colorAttachments[0] else {
-            retry(gain, remaining: retries)
-            return
-        }
-        color.texture = drawable.texture
-        color.loadAction = .clear
-        color.storeAction = .store
-        color.clearColor = MTLClearColorMake(gain, gain, gain, 1)
-        guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else {
-            retry(gain, remaining: retries)
-            return
-        }
-        encoder.endEncoding()
-        buffer.present(drawable)
-        buffer.addCompletedHandler { [weak self] buffer in
-            guard buffer.status == .error else { return }
+    private func draw() {
+        guard let gain = requestedGain, window.isVisible, !rendering, retryTask == nil else { return }
+        rendering = true
+        frames.render(gain: gain) { [weak self] frame in
             Task { @MainActor [weak self] in
-                self?.retry(gain, remaining: retries)
+                self?.renderCompleted(frame, gain: gain)
             }
         }
-        buffer.commit()
     }
 
-    private func retry(_ gain: Double, remaining: Int) {
-        guard requestedGain == gain, window.isVisible else { return }
-        guard remaining > 0 else {
-            requestedGain = nil
+    private func renderCompleted(_ frame: RenderedBoostFrame?, gain: Double) {
+        rendering = false
+        guard let requestedGain, window.isVisible else { return }
+        guard let frame else {
+            scheduleRetry()
             return
         }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(150))
-            self?.draw(gain, retries: remaining - 1)
+        failures = 0
+        guard gain == requestedGain else {
+            draw()
+            return
         }
+        frame.present()
+        if state != .active {
+            state = .active
+            onStateChanged()
+        }
+    }
+
+    private func scheduleRetry() {
+        let delay = Self.retryDelays[failures]
+        failures = min(failures + 1, Self.retryDelays.count - 1)
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            retryTask = nil
+            draw()
+        }
+        if failures >= 3, state != .unavailable {
+            state = .unavailable
+            onStateChanged()
+        }
+    }
+}
+
+// Core Animation setup and attachment stay on the main actor. The only operation on the
+// layer from this serial queue is drawable acquisition, which can block for up to a second.
+private final class BoostFrameRenderer: @unchecked Sendable {
+    private let layer: CAMetalLayer
+    private let commandQueue: any MTLCommandQueue
+    private let submissionQueue = DispatchQueue(label: "dev.illyes.lumaluma.metal", qos: .userInitiated)
+
+    init(layer: CAMetalLayer, commandQueue: any MTLCommandQueue) {
+        self.layer = layer
+        self.commandQueue = commandQueue
+    }
+
+    func render(gain: Double, completion: @escaping @Sendable (RenderedBoostFrame?) -> Void) {
+        submissionQueue.async {
+            autoreleasepool {
+                let pass = MTLRenderPassDescriptor()
+                guard let buffer = self.commandQueue.makeCommandBuffer(),
+                      let color = pass.colorAttachments[0],
+                      let drawable = self.layer.nextDrawable() else {
+                    completion(nil)
+                    return
+                }
+                color.texture = drawable.texture
+                color.loadAction = .clear
+                color.storeAction = .store
+                color.clearColor = MTLClearColorMake(gain, gain, gain, 1)
+                guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else {
+                    completion(nil)
+                    return
+                }
+                encoder.endEncoding()
+                let frame = RenderedBoostFrame(drawable: drawable)
+                buffer.addCompletedHandler { buffer in
+                    completion(buffer.status == .completed ? frame : nil)
+                }
+                buffer.commit()
+            }
+        }
+    }
+}
+
+// The GPU writes the drawable first, then the main actor alone may present it.
+private struct RenderedBoostFrame: @unchecked Sendable {
+    let drawable: any CAMetalDrawable
+
+    @MainActor
+    func present() {
+        drawable.present()
     }
 }
 
