@@ -36,6 +36,7 @@ struct DisplayRenderReport: Equatable {
     let hasPendingBoost: Bool
     let gammaStatus: GammaBoostStatus?
     let gammaRestorationStatus: GammaBoostStatus?
+    let isRestoringCurve: Bool
     let currentHeadroom: Double
     let potentialHeadroom: Double
 }
@@ -146,6 +147,7 @@ final class DisplayRenderer {
             hasPendingBoost: gammaStatus == .starting || overlays.values.contains { $0.boostState == .pending },
             gammaStatus: gammaStatus,
             gammaRestorationStatus: gamma.restorationStatus,
+            isRestoringCurve: gamma.isRestoring,
             currentHeadroom: edrDisplays.map { Double($0.maximumExtendedDynamicRangeColorComponentValue) }.max() ?? 1,
             potentialHeadroom: edrDisplays.map { Double($0.maximumPotentialExtendedDynamicRangeColorComponentValue) }.max() ?? 1
         )

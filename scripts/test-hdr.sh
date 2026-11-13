@@ -7,6 +7,11 @@ test_dir="$(mktemp -d "$(pwd)/.build/hdr-tests-XXXXXX")"
 trap 'rm -rf -- "$test_dir"' EXIT
 
 swiftc -parse-as-library -warnings-as-errors \
+    Sources/LumaLuma/LightingState.swift Tests/LumaLumaTests/LightingStateTests.swift \
+    -o "$test_dir/lighting-state"
+"$test_dir/lighting-state"
+
+swiftc -parse-as-library -warnings-as-errors \
     Sources/LumaLuma/GammaBoostSession.swift Tests/LumaLumaTests/GammaBoostSessionTests.swift \
     -o "$test_dir/hdr-gate"
 "$test_dir/hdr-gate"

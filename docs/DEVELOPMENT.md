@@ -10,7 +10,7 @@ Run the existing automated checks from the repository directory
 ./scripts/test-hdr.sh
 ```
 
-The script compiles four standalone test executables with warnings treated as errors, runs them and removes its temporary test directory. The suites cover HDR stability and helper responses, native brightness-event routing, Boost decisions and hardware synchronization, and gamma ownership and restoration. Their helper and display backends use controlled fixtures.
+The script compiles five standalone test executables with warnings treated as errors, runs them and removes its temporary test directory. The suites cover effect selection and activation, HDR stability and helper responses, native brightness-event routing, Boost decisions and hardware synchronization, and gamma ownership and restoration. Their helper and display backends use controlled fixtures.
 
 Build the packaged app with
 
@@ -44,7 +44,11 @@ codesign --verify --deep --strict 'dist/Luma Luma.app'
 
 ## Rendering and brightness keys
 
+`LightingState` keeps the selected effect, enabled state and temporary keyboard strength together. Selecting an effect while disabled configures it for the next activation. Repeating the same selection or enabled value has no effect. A manual restart uses the saved slider strength. The controller starts renderer cleanup synchronously on deactivation or effect changes, so a quick off/on sequence releases the previous session before starting another.
+
 For built-in full-display Boost, a small Metal EDR surface activates HDR headroom. The app waits for the headroom to remain stable for two seconds within an eight-second startup window. It then asks the helper to apply a per-display RGB transfer curve, capped by available headroom and a gain of 1.45.
+
+If an active session loses headroom, it restores the curve and waits for cleanup to finish before starting a new attempt with the latest requested strength. That attempt has its own two-second stability check and eight-second deadline. A startup timeout, helper error or ownership conflict remains visible until an explicit new activation. Turning the effect off cancels pending recovery. The controls show preparation and restoration separately from confirmed active rendering.
 
 External, half-display and front-window Boost use Metal compositing overlays. Front-window placement reads WindowServer metadata. Eclipse and Ring Light use click-through windows.
 
@@ -64,6 +68,12 @@ Turning Boost off, sleep, lock and quit release the session. Pipe disconnection 
 
 The GitHub Actions workflow runs the test script and release bundle build on `macos-15` for pushes to `main` and pull requests. It uses read-only repository access. Its first hosted run remains pending until the repository is published and a workflow is triggered.
 
-Physical MacBook brightness-key acceptance remains outstanding. On a supported MacBook with Accessibility permission, test single presses and held keys from the normal brightness range through HDR Boost and back, including Shift–Option steps. Observe both the macOS brightness value and RGB curve during the transition. Check display selection, partial synchronization failures where the hardware allows them, and restoration after Off, sleep, lock and quit.
+Native UI validation on macOS 27.2.1 with an Apple silicon MacBook covered disabled effect selection, enabled effect changes, repeated selection, settings tabs, rapid off/on, and full/half display changes. At a saved Boost strength of 100%, the built-in display reached an RGB curve gain of 1.45 automatically. Disabling restored all 1,024 samples per channel exactly and retained the macOS backlight value. Separate test bundles with controlled helper responses covered the preparing indicator, timeout and helper-error messages.
 
-Also inspect the menu bar icon in light and dark appearances and open **Settings…** from the menu. Automated fixture tests cover state and protocol behavior. Real HDR appearance, keyboard events, backlight changes and display restoration require these hardware checks.
+Physical MacBook brightness keys were tested on November 13, 2026, with Accessibility permission enabled. A Brighter press at maximum native brightness started Boost from Off and produced a measured RGB gain of 1.028125. Shift–Option increased it to 1.03515625 and decreased it back. Held Brighter presses applied successive HDR steps. Held Darker presses restored the baseline and then continued lowering native brightness. Individual presses also crossed back to native brightness. At the end, native brightness was back at 1 and all 1,024 samples in each RGB channel exactly matched the starting curve.
+
+The test used the current app bundle after removing and re-adding an older permission entry. On German-language macOS 27, the permission is listed under **Datenschutz & Sicherheit → Gerätesteuerung und Datenzugriff**. Keep the tested bundle in place while validating permissions, since each ad-hoc rebuild has its own code identity.
+
+Additional hardware coverage remains for synchronized external displays and restoration after sleep, lock and quit. Check display selection and partial synchronization failures where the hardware allows them.
+
+Also inspect the menu bar icon in light and dark appearances and open **Settings…** from the menu. Automated fixture tests cover state and protocol behavior. Hardware checks establish real HDR appearance, keyboard events, backlight changes and display restoration for the tested device.

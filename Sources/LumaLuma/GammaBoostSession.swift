@@ -69,6 +69,7 @@ final class GammaBoostSession {
     private let transport: GammaHelperTransport
     private var attempt: Attempt?
     private var cleanupToken: UUID?
+    private var restartAfterRestoration = false
 
     init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/LumaLumaGammaHelper")) {
         transport = GammaHelperTransport(helperURL: helperURL)
@@ -82,6 +83,16 @@ final class GammaBoostSession {
     ) -> GammaBoostStatus {
         if attempt?.displayID != displayID {
             stop()
+            attempt = Attempt(displayID: displayID)
+            begin()
+        }
+        if restartAfterRestoration {
+            guard !isRestoring, attempt?.inFlight != true else { return .starting }
+            restartAfterRestoration = false
+            if let restorationStatus {
+                attempt?.status = restorationStatus
+                return restorationStatus
+            }
             attempt = Attempt(displayID: displayID)
             begin()
         }
@@ -106,7 +117,8 @@ final class GammaBoostSession {
             guard decision == .ready else { return .starting }
         } else if !triggerReady || !currentHeadroom.isFinite || currentHeadroom <= 1.05 {
             finish(.unavailable)
-            return .unavailable
+            restartAfterRestoration = true
+            return .starting
         }
 
         if !current.inFlight {
@@ -122,6 +134,7 @@ final class GammaBoostSession {
     }
 
     func stop(waitForRestoration: Bool = false) {
+        restartAfterRestoration = false
         if let attempt, attempt.isOngoing, attempt.acquired || attempt.inFlight {
             release()
         }
@@ -160,10 +173,14 @@ final class GammaBoostSession {
         attempt?.lastCommand = .now
         transport.send(command) { [weak self] reply in
             Task { @MainActor [weak self] in
-                guard let self, attempt?.token == token, attempt?.isOngoing == true else { return }
+                guard let self, attempt?.token == token else { return }
+                let recovering = restartAfterRestoration
+                guard attempt?.isOngoing == true || recovering else { return }
                 attempt?.inFlight = false
                 if reply != .ok {
-                    finish(reply.boostStatus)
+                    finish(reply.boostStatus, release: !recovering)
+                    onStatusChanged?()
+                } else if recovering {
                     onStatusChanged?()
                 } else if let gain {
                     let wasActive = attempt?.status == .active
@@ -176,6 +193,7 @@ final class GammaBoostSession {
     }
 
     private func finish(_ status: GammaBoostStatus, release shouldRelease: Bool = true) {
+        restartAfterRestoration = false
         attempt?.status = status
         if shouldRelease { release() }
     }

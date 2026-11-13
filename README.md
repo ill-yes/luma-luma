@@ -19,7 +19,7 @@ open 'dist/Luma Luma.app'
 
 The script creates a release build for the current Mac's architecture and signs the app locally with an ad-hoc signature. Move `Luma Luma.app` to Applications before enabling **Open at login**.
 
-Click the sunrise icon in the menu bar to choose a mode, adjust its strength, open **Settings…** or quit. The sun has a filled center while an effect is active. Right-click the icon to toggle the last effect. Reopening the app from Finder opens its controls.
+Click the sunrise icon in the menu bar to choose an effect, adjust its strength, open **Settings…** or quit. The switch turns the selected effect on or off. You can select and configure effects while the switch is off. Changing effects while it is on applies the new selection. The sun has a filled center while an effect is active. Right-click the icon to toggle the selected effect. Reopening the app from Finder opens its controls.
 
 ## Controls
 
@@ -34,11 +34,15 @@ Click the sunrise icon in the menu bar to choose a mode, adjust its strength, op
 
 For **Entire display** on a built-in XDR display, set macOS brightness to maximum and adjust the **Boost** slider. At full strength, Luma Luma requests an RGB transfer-curve gain of up to 1.45, limited by current HDR headroom. The slider represents effect strength. Display presets, power and temperature also affect the brightness macOS makes available.
 
+**Preparing HDR…** appears while the display's HDR headroom stabilizes. Luma Luma then applies the requested strength automatically. A brief loss of headroom during active Boost starts recovery after the previous curve is restored. A timeout or display-curve error stays visible. Turn the switch off and on to start a fresh attempt.
+
 Close other display-curve utilities before using built-in full-display Boost. Luma Luma reports a conflict if another process changes its curve. Turning the effect off, sleeping, locking or quitting starts restoration of the saved baseline while Luma Luma retains ownership of the curve.
 
 ## MacBook brightness keys
 
 In **Settings… → Shortcuts**, enable **Use display brightness keys**. Grant Luma Luma access in **System Settings → Privacy & Security → Accessibility**, then toggle the option off and on.
+
+On German-language macOS 27, this permission pane is named **Gerätesteuerung und Datenzugriff**. If a replaced local build still reports missing access while its switch is on, quit Luma Luma, remove its entry from that pane, add the current app bundle again and relaunch it.
 
 At maximum macOS brightness, the next **Brighter** press starts HDR Boost on a supported selected display, including from **Off**. Further presses increase the effect. **Darker** reduces Boost and returns to macOS brightness after the baseline curve has been restored. Holding either key repeats the adjustment. Hold **Shift–Option** for finer steps.
 

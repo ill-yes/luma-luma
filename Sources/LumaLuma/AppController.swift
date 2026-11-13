@@ -5,40 +5,29 @@ import ServiceManagement
 import SwiftUI
 import os
 
-enum LightingMode: String, CaseIterable {
-    case off, boost, eclipse, ring
-
-    var title: String {
-        switch self {
-        case .off: "Off"
-        case .boost: "Boost"
-        case .eclipse: "Eclipse"
-        case .ring: "Ring Light"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .off: "sun.max"
-        case .boost: "sun.max.fill"
-        case .eclipse: "moon.fill"
-        case .ring: "circle.circle"
-        }
-    }
-}
-
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     let preferences = Preferences()
-    @Published private(set) var mode: LightingMode = .off
+    @Published private var lighting = LightingState()
     @Published private(set) var report: DisplayRenderReport?
     @Published private(set) var loginEnabled = false
     @Published private(set) var shortcutError: String?
     @Published private(set) var loginMessage: String?
     @Published private(set) var paused = false
-    @Published private var keyboardBoost: Double?
-
-    var boostStrength: Double { keyboardBoost ?? preferences.boost }
+    var mode: LightingMode { lighting.mode }
+    var selectedEffect: LightingEffect { lighting.selectedEffect }
+    var isEnabled: Bool { lighting.isEnabled }
+    var boostStrength: Double { lighting.keyboardBoost ?? preferences.boost }
+    var isRestoringCurve: Bool { renderer.isRestoringCurve }
+    var hasActiveEffect: Bool {
+        guard !paused else { return false }
+        switch mode {
+        case .off: return false
+        case .boost: return (report?.activeBoostDisplayCount ?? 0) > 0
+        case .eclipse: return preferences.dim > 0 && (report?.displayCount ?? 0) > 0
+        case .ring: return preferences.ringStrength > 0 && (report?.displayCount ?? 0) > 0
+        }
+    }
 
     private let log = Logger(subsystem: "dev.illyes.lumaluma", category: "display")
     private let renderer = DisplayRenderer()
@@ -61,7 +50,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var automationResult: Bool?
     private var previousRule: PowerRule?
     private var previousThreshold: Int?
-    private var lastMode: LightingMode = .boost
+    private var previousScope: DisplayScope?
+    private var previousRegion: BoostRegion?
     private var systemSleeping = false
     private var screensSleeping = false
     private var locked = false
@@ -138,27 +128,48 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func select(_ next: LightingMode) {
-        keyboardBoost = nil
-        setMode(next)
-        queueRefresh()
-        updateRefreshTimer()
+        guard let effect = next.effect else {
+            setEnabled(false)
+            return
+        }
+        changeLighting { $0.activate(effect) }
     }
 
-    private func setMode(_ next: LightingMode) {
-        guard next != mode else { return }
-        if next != .off { lastMode = next }
-        mode = next
-        log.info("Selected mode \(next.rawValue, privacy: .public)")
+    func selectEffect(_ effect: LightingEffect) {
+        changeLighting { $0.selectEffect(effect) }
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        changeLighting { $0.setEnabled(enabled) }
+    }
+
+    private func changeLighting(_ change: (inout LightingState) -> Bool) {
+        var next = lighting
+        guard change(&next) else { return }
+        if next.mode != mode {
+            resetRendering()
+        }
+        lighting = next
+        log.info("Selected effect \(self.selectedEffect.rawValue, privacy: .public); enabled \(self.isEnabled)")
+        queueRefresh()
+        updateRefreshTimer()
         updateStatusItem()
     }
 
     func setManualBoost(_ strength: Double) {
-        keyboardBoost = nil
-        preferences.boost = strength
+        guard strength.isFinite else { return }
+        let value = min(1, max(0, strength))
+        if preferences.boost != value { preferences.boost = value }
+        changeLighting { $0.useManualBoost() }
     }
 
     func toggle() {
-        select(mode == .off ? lastMode : .off)
+        setEnabled(!isEnabled)
+    }
+
+    private func resetRendering() {
+        renderer.clear()
+        report = nil
     }
 
     func setLoginEnabled(_ enabled: Bool) {
@@ -240,15 +251,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func updateStatusItem() {
-        let active: Bool
-        switch mode {
-        case .off: active = false
-        case .boost: active = (report?.activeBoostDisplayCount ?? 0) > 0
-        case .eclipse: active = preferences.dim > 0 && (report?.displayCount ?? 0) > 0
-        case .ring: active = preferences.ringStrength > 0 && (report?.displayCount ?? 0) > 0
-        }
         let button = statusItem?.button
-        button?.image = MenuBarIcon.image(active: active && !paused)
+        button?.image = MenuBarIcon.image(active: hasActiveEffect)
         button?.toolTip = "Luma Luma · \(mode.title)"
         button?.setAccessibilityLabel("Luma Luma")
         button?.setAccessibilityValue(paused ? "Paused" : mode.title)
@@ -307,6 +311,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func updatePreferences(initial: Bool = false) {
         guard ready else { return }
+        if previousScope != preferences.scope || previousRegion != preferences.region {
+            previousScope = preferences.scope
+            previousRegion = preferences.region
+            resetRendering()
+        }
         let policy: NSApplication.ActivationPolicy = preferences.showDockIcon ? .regular : .accessory
         if NSApplication.shared.activationPolicy() != policy {
             NSApplication.shared.setActivationPolicy(policy)
@@ -491,17 +500,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func applyKeyboardBoost(_ value: Double, on screen: NSScreen, displayID: CGDirectDisplayID) {
-        keyboardBoost = value
         if value == 0 {
-            // Start restoring the curve before the next brightness key event can reach macOS.
-            refreshDisplays()
-            setMode(.off)
-            keyboardBoost = nil
+            setEnabled(false)
         } else {
-            setMode(.boost)
+            changeLighting { $0.activate(.boost, keyboardBoost: value) }
         }
-        queueRefresh()
-        updateRefreshTimer()
         let builtInFull = CGDisplayIsBuiltin(displayID) != 0 && preferences.region == .full
         let percentage = builtInFull ? Int(((1 + 0.45 * value) * 100).rounded()) : nil
         showBrightness(value, percentage: percentage, on: screen)

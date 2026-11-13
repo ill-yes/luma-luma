@@ -5,8 +5,7 @@ struct StatusView: View {
     @ObservedObject var preferences: Preferences
 
     private var percent: Int {
-        switch controller.mode {
-        case .off: 0
+        switch controller.selectedEffect {
         case .boost: Int((controller.boostStrength * 100).rounded())
         case .eclipse: Int((preferences.dim * 100).rounded())
         case .ring: Int((preferences.ringStrength * 100).rounded())
@@ -15,6 +14,7 @@ struct StatusView: View {
 
     private var caption: String {
         if controller.paused { return "Paused while the display is inactive" }
+        if controller.isRestoringCurve { return "Restoring display…" }
         if controller.report?.gammaRestorationStatus == .restorationFailed {
             return "Could not restore the display curve"
         }
@@ -31,9 +31,9 @@ struct StatusView: View {
 
     private var boostCaption: String {
         guard controller.boostStrength > 0 else { return "Boost set to zero" }
-        guard let report = controller.report else { return "Starting HDR boost" }
+        guard let report = controller.report else { return "Preparing HDR…" }
         switch report.gammaStatus {
-        case .starting: return "Preparing built-in display HDR"
+        case .starting: return "Preparing HDR…"
         case .unavailable: return "Built-in display HDR unavailable"
         case .conflict: return "Display curve changed by another app"
         case .failed: return "Could not apply the display curve"
@@ -42,7 +42,7 @@ struct StatusView: View {
         }
         if report.edrDisplayCount == 0 { return "No HDR display available" }
         if report.targetBoostDisplayCount == 0 { return "Waiting for a frontmost window" }
-        if report.hasPendingBoost && report.activeBoostDisplayCount == 0 { return "Starting HDR boost" }
+        if report.hasPendingBoost && report.activeBoostDisplayCount == 0 { return "Preparing HDR…" }
         if report.activeBoostDisplayCount == 0 { return "HDR renderer unavailable" }
         if report.currentHeadroom <= 1.01 { return "macOS is limiting HDR headroom" }
         if report.activeBoostDisplayCount < report.targetBoostDisplayCount {
@@ -51,46 +51,67 @@ struct StatusView: View {
         return "HDR display brightness"
     }
 
+    private var isBusy: Bool {
+        if controller.isRestoringCurve { return true }
+        guard !controller.paused, controller.mode == .boost, controller.boostStrength > 0 else { return false }
+        guard let report = controller.report else { return true }
+        return report.hasPendingBoost
+    }
+
+    private var effectSymbol: String {
+        if controller.hasActiveEffect { return controller.selectedEffect.symbol }
+        switch controller.selectedEffect {
+        case .boost: return "sun.max"
+        case .eclipse: return "moon"
+        case .ring: return "circle.circle"
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: controller.mode.symbol)
+                Image(systemName: effectSymbol)
                     .font(.system(size: 21, weight: .medium))
-                    .foregroundStyle(controller.mode == .off ? Color.secondary : .accentColor)
+                    .foregroundStyle(controller.hasActiveEffect ? Color.accentColor : .secondary)
                     .frame(width: 30)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Luma Luma")
                         .font(.headline)
-                    Text(caption)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if isBusy {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .accessibilityLabel("Updating display")
+                        }
+                        Text(caption)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Toggle("Lighting", isOn: Binding(
-                    get: { controller.mode != .off },
-                    set: { _ in controller.toggle() }
+                    get: { controller.isEnabled },
+                    set: { controller.setEnabled($0) }
                 ))
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .controlSize(.small)
-                .help("Turn Luma Luma on or off")
+                .help("Turn the selected effect on or off")
             }
 
-            Picker("Lighting mode", selection: Binding(
-                get: { controller.mode },
-                set: { controller.select($0) }
+            Picker("Lighting effect", selection: Binding(
+                get: { controller.selectedEffect },
+                set: { controller.selectEffect($0) }
             )) {
-                ForEach(LightingMode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
+                ForEach(LightingEffect.allCases, id: \.self) { effect in
+                    Text(effect.title).tag(effect)
                 }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
 
-            switch controller.mode {
-            case .off:
-                EmptyView()
+            switch controller.selectedEffect {
             case .boost:
                 slider("Boost", value: Binding(
                     get: { controller.boostStrength },
