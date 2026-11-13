@@ -24,6 +24,82 @@ struct KeyBinding: Codable, Hashable {
     let displayName: String
 }
 
+struct BrightnessKeyPresses {
+    enum Disposition: Equatable {
+        case forward
+        case consume
+        case beginNativePress
+    }
+
+    private enum Press {
+        case forwarded
+        case consumed
+        case nativeOnly
+    }
+
+    private var presses: [Int32: Press] = [:]
+
+    mutating func route(
+        key: Int32,
+        state: UInt32,
+        isRepeat: Bool,
+        modifiers: NSEvent.ModifierFlags,
+        adjust: (Bool, Bool) -> Bool
+    ) -> Disposition {
+        guard key == NX_KEYTYPE_BRIGHTNESS_UP || key == NX_KEYTYPE_BRIGHTNESS_DOWN else { return .forward }
+        if state == UInt32(NX_KEYUP) {
+            return presses.removeValue(forKey: key) == .consumed ? .consume : .forward
+        }
+        guard state == UInt32(NX_KEYDOWN) else { return .forward }
+
+        let increase = key == NX_KEYTYPE_BRIGHTNESS_UP
+        let fine = modifiers == [.option, .shift]
+        let supportedModifiers = modifiers.isEmpty || fine
+        if isRepeat {
+            switch presses[key] {
+            case .consumed:
+                guard supportedModifiers else { return .consume }
+                return adjust(increase, fine) ? .consume : .beginNativePress
+            case .forwarded:
+                // macOS already has the original down. Its eventual up still passes through.
+                return supportedModifiers && adjust(increase, fine) ? .consume : .forward
+            case .nativeOnly, nil:
+                return .forward
+            }
+        }
+
+        guard supportedModifiers else {
+            presses[key] = .nativeOnly
+            return .forward
+        }
+        let consumed = adjust(increase, fine)
+        presses[key] = consumed ? .consumed : .forwarded
+        return consumed ? .consume : .forward
+    }
+
+    mutating func didBeginNativePress(for key: Int32) {
+        presses[key] = .nativeOnly
+    }
+
+    mutating func reset() {
+        presses.removeAll()
+    }
+
+    static func nativeDown(replacingRepeat event: NSEvent) -> CGEvent? {
+        NSEvent.otherEvent(
+            with: .systemDefined,
+            location: event.locationInWindow,
+            modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp,
+            windowNumber: event.windowNumber,
+            context: nil,
+            subtype: event.subtype.rawValue,
+            data1: event.data1 & ~1,
+            data2: event.data2
+        )?.cgEvent
+    }
+}
+
 @MainActor
 final class ShortcutController {
     private static let signature: OSType = 0x4C4C4748
@@ -34,11 +110,6 @@ final class ShortcutController {
         let reference: EventHotKeyRef
     }
 
-    private enum BrightnessPress {
-        case forwarded
-        case consumed
-    }
-
     private let onAction: (ShortcutAction) -> Void
     private let onBrightnessKey: (Bool, Bool) -> Bool
     private var registrations: [ShortcutAction: Registration] = [:]
@@ -47,7 +118,7 @@ final class ShortcutController {
     private var nextID: UInt32 = 1
     private var brightnessTap: CFMachPort?
     private var brightnessSource: CFRunLoopSource?
-    private var brightnessPresses: [Int32: BrightnessPress] = [:]
+    private var brightnessPresses = BrightnessKeyPresses()
 
     init(
         onAction: @escaping (ShortcutAction) -> Void,
@@ -137,12 +208,23 @@ final class ShortcutController {
                 let state = (data >> 8) & 0xFF
                 let repeatPress = data & 1 != 0
                 let modifiers = systemEvent.modifierFlags.intersection([.command, .control, .option, .shift])
-                let shouldConsume = MainActor.assumeIsolated {
-                    controller.handleBrightnessKey(
-                        key, state: state, repeatPress: repeatPress, modifiers: modifiers
+                let disposition = MainActor.assumeIsolated {
+                    controller.brightnessPresses.route(
+                        key: key, state: state, isRepeat: repeatPress,
+                        modifiers: modifiers, adjust: controller.onBrightnessKey
                     )
                 }
-                return shouldConsume ? nil : forwarded
+                switch disposition {
+                case .forward: return forwarded
+                case .consume: return nil
+                case .beginNativePress:
+                    // The app swallowed the original down. Give macOS a regular down
+                    // now so the rest of the physical press can be delivered as a pair.
+                    guard let replacement = BrightnessKeyPresses.nativeDown(replacingRepeat: systemEvent)
+                    else { return nil }
+                    MainActor.assumeIsolated { controller.brightnessPresses.didBeginNativePress(for: key) }
+                    return Unmanaged.passRetained(replacement)
+                }
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ), let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else { return false }
@@ -214,7 +296,7 @@ final class ShortcutController {
     }
 
     private func tapDisabled(timedOut: Bool) {
-        brightnessPresses.removeAll()
+        brightnessPresses.reset()
         if timedOut, AXIsProcessTrusted(), let brightnessTap {
             CGEvent.tapEnable(tap: brightnessTap, enable: true)
         }
@@ -230,43 +312,7 @@ final class ShortcutController {
             CFMachPortInvalidate(brightnessTap)
             self.brightnessTap = nil
         }
-        brightnessPresses.removeAll()
-    }
-
-    private func handleBrightnessKey(
-        _ key: Int32, state: UInt32, repeatPress: Bool, modifiers: NSEvent.ModifierFlags
-    ) -> Bool {
-        if state == UInt32(NX_KEYUP) {
-            return brightnessPresses.removeValue(forKey: key) == .consumed
-        }
-        guard state == UInt32(NX_KEYDOWN) else { return false }
-
-        let increase = key == NX_KEYTYPE_BRIGHTNESS_UP
-        let fine = modifiers == [.option, .shift]
-        let supportedModifiers = modifiers.isEmpty || fine
-        if repeatPress {
-            switch brightnessPresses[key] {
-            case .consumed:
-                if supportedModifiers { _ = onBrightnessKey(increase, fine) }
-                return true
-            case .forwarded:
-                // macOS saw the initial press and still needs its release.
-                // Take over individual repeats once the system brightness reaches its limit.
-                return supportedModifiers && onBrightnessKey(increase, fine)
-            case nil:
-                return false
-            }
-        }
-        brightnessPresses.removeValue(forKey: key)
-        guard supportedModifiers else { return false }
-        if onBrightnessKey(increase, fine) {
-            brightnessPresses[key] = .consumed
-            return true
-        }
-        if increase {
-            brightnessPresses[key] = .forwarded
-        }
-        return false
+        brightnessPresses.reset()
     }
 }
 

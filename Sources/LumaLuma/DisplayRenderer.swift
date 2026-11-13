@@ -49,9 +49,44 @@ final class DisplayRenderer {
     private let gamma = GammaBoostSession()
     private var hdrTrigger: BoostOverlay?
     private var hdrTriggerDisplay: CGDirectDisplayID?
+    private var lastGammaStatus: GammaBoostStatus?
 
     init() {
         gamma.onStatusChanged = { [weak self] in self?.onBoostStateChanged?() }
+    }
+
+    var isRestoringCurve: Bool { gamma.isRestoring }
+
+    func keyBoostState(
+        displayID: CGDirectDisplayID,
+        screen: NSScreen,
+        region: BoostRegion,
+        requested: Bool
+    ) -> BrightnessKeyRouting.BoostState {
+        guard screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1, metal != nil else {
+            return .unavailable
+        }
+        if region == .frontWindow,
+           boostFrame(on: screen, region: region, frontWindow: frontWindowFrame()).isEmpty {
+            return .unavailable
+        }
+        guard requested else { return .ready }
+        if region == .full, CGDisplayIsBuiltin(displayID) != 0 {
+            return keyState(for: lastGammaStatus)
+        }
+        switch overlays[displayID]?.boostState {
+        case .active: return .active
+        case .pending, nil: return .starting
+        case .unavailable: return .unavailable
+        }
+    }
+
+    private func keyState(for status: GammaBoostStatus?) -> BrightnessKeyRouting.BoostState {
+        switch status {
+        case .active: return .active
+        case .starting, nil: return .starting
+        default: return .unavailable
+        }
     }
 
     func apply(_ settings: DisplayRenderSettings) -> DisplayRenderReport {
@@ -66,6 +101,7 @@ final class DisplayRenderer {
             }
             : nil
         let gammaStatus = gammaDisplay.map { updateGamma(on: $0, strength: boost) }
+        lastGammaStatus = gammaStatus
         if gammaDisplay == nil { stopGamma() }
         var targetBoostDisplayCount = 0
 
@@ -116,6 +152,7 @@ final class DisplayRenderer {
     }
 
     func clear(waitForGammaRestoration: Bool = false) {
+        lastGammaStatus = nil
         stopGamma(waitForRestoration: waitForGammaRestoration)
         clearOverlays()
     }

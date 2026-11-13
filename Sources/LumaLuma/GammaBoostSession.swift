@@ -64,9 +64,13 @@ final class GammaBoostSession {
         return attempt.status == .starting || attempt.status == .active
     }
 
-    private let transport = GammaHelperTransport()
+    private let transport: GammaHelperTransport
     private var attempt: Attempt?
     private var cleanupToken: UUID?
+
+    init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/LumaLumaGammaHelper")) {
+        transport = GammaHelperTransport(helperURL: helperURL)
+    }
 
     func update(
         displayID: CGDirectDisplayID,
@@ -128,18 +132,21 @@ final class GammaBoostSession {
         guard let current = attempt else { return }
         attempt?.inFlight = true
         attempt?.lastCommand = .now
-        transport.begin(displayID: current.displayID) { [weak self] reply in
+        transport.begin(displayID: current.displayID) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self, attempt?.token == current.token, attempt?.status == .starting else { return }
                 attempt?.inFlight = false
-                // The existing display poll can try again after the previous
-                // helper releases its lock. Busy does not change UI state.
-                guard reply != .busy else { return }
-                if reply == .ok {
+                switch result {
+                case .waiting:
+                    // The display poll retries while the other helper holds the lock.
+                    return
+                case .acquired:
                     attempt?.acquired = true
+                    // Transport cannot acquire until the previous helper exits.
+                    cleanupToken = nil
                     restorationStatus = nil
-                } else {
-                    finish(reply.boostStatus)
+                case .rejected(let status):
+                    finish(status, release: false)
                 }
                 onStatusChanged?()
             }
@@ -181,13 +188,12 @@ final class GammaBoostSession {
             Task { @MainActor [weak self] in
                 guard let self, cleanupToken == token else { return }
                 cleanupToken = nil
-                let status: GammaBoostStatus?
                 switch result {
-                case .ok: status = nil
-                case .conflict: status = .conflict
-                default: status = .restorationFailed
+                case .notNeeded: break
+                case .restored: restorationStatus = nil
+                case .conflict: restorationStatus = .conflict
+                case .failed: restorationStatus = .restorationFailed
                 }
-                restorationStatus = status
                 onStatusChanged?()
             }
         }
@@ -211,30 +217,63 @@ private enum GammaHelperReply: String {
     }
 }
 
+private enum GammaBeginResult {
+    case acquired
+    case waiting
+    case rejected(GammaBoostStatus)
+}
+
+private enum GammaEndResult {
+    case notNeeded
+    case restored
+    case conflict
+    case failed
+}
+
 // All Process and pipe I/O stays on this queue. A closed input also requests
 // rollback if Luma Luma exits before it can send an explicit end.
 private final class GammaHelperTransport: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "dev.illyes.lumaluma.gamma", qos: .userInitiated)
-    private var connection: Connection?
-    private var retiring: Process?
+    private struct Retirement {
+        let process: Process
+        let reply: GammaHelperReply?
+        var completions: [@Sendable (GammaEndResult) -> Void] = []
+    }
 
-    func begin(displayID: CGDirectDisplayID, completion: @escaping @Sendable (GammaHelperReply) -> Void) {
-        queue.async {
+    private let queue = DispatchQueue(label: "dev.illyes.lumaluma.gamma", qos: .userInitiated)
+    private let helperURL: URL
+    private var connection: Connection?
+    private var retiring: Retirement?
+
+    init(helperURL: URL) {
+        self.helperURL = helperURL
+    }
+
+    func begin(displayID: CGDirectDisplayID, completion: @escaping @Sendable (GammaBeginResult) -> Void) {
+        queue.async { [self] in
             guard self.connection == nil else {
-                completion(.error)
+                completion(.rejected(.failed))
                 return
             }
-            guard self.retiring?.isRunning != true else {
-                completion(.busy)
+            guard self.retiring == nil else {
+                completion(.waiting)
                 return
             }
-            self.retiring = nil
             do {
-                let connection = try Connection()
-                self.connection = connection
-                completion(connection.request("begin \(displayID)"))
+                let connection = try Connection(helperURL: self.helperURL) { [weak self] process in
+                    self?.queue.async { [weak self] in self?.finishRetirement(of: process) }
+                }
+                let reply = connection.request("begin \(displayID)", allowsBusy: true)
+                if reply == .ok {
+                    self.connection = connection
+                    completion(.acquired)
+                } else {
+                    connection.close()
+                    self.retiring = Retirement(process: connection.process, reply: nil)
+                    self.finishRetirement(of: connection.process)
+                    completion(reply == .busy ? .waiting : .rejected(reply.boostStatus))
+                }
             } catch {
-                completion(.error)
+                completion(.rejected(.failed))
             }
         }
     }
@@ -243,13 +282,13 @@ private final class GammaHelperTransport: @unchecked Sendable {
         queue.async { completion(self.connection?.request(command) ?? .error) }
     }
 
-    func end(completion: @escaping @Sendable (GammaHelperReply) -> Void) {
+    func end(completion: @escaping @Sendable (GammaEndResult) -> Void) {
         queue.async {
             guard let connection = self.connection else {
-                if let process = self.retiring, process.isRunning || process.terminationStatus != 0 {
-                    completion(.error)
+                if self.retiring?.reply != nil {
+                    self.retiring?.completions.append(completion)
                 } else {
-                    completion(.ok)
+                    completion(.notNeeded)
                 }
                 return
             }
@@ -257,27 +296,27 @@ private final class GammaHelperTransport: @unchecked Sendable {
             let reply = connection.request("end")
             connection.close()
             let process = connection.process
-            self.retiring = process
-            let exitWait: Duration = reply == .ok || reply == .conflict ? .milliseconds(250) : .milliseconds(5500)
-            self.waitForExit(process, upTo: exitWait)
-            if reply == .ok || reply == .conflict {
-                completion(reply)
-            } else {
-                completion(!process.isRunning && process.terminationStatus == 0 ? .ok : .error)
-            }
+            self.retiring = Retirement(process: process, reply: reply, completions: [completion])
+            self.finishRetirement(of: process)
         }
     }
 
-    private func waitForExit(_ process: Process, upTo duration: Duration) {
-        let deadline = ContinuousClock.now.advanced(by: duration)
-        while process.isRunning && ContinuousClock.now < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
+    private func finishRetirement(of process: Process) {
+        guard let retirement = retiring, retirement.process === process, !process.isRunning else { return }
+        retiring = nil
+        let result: GammaEndResult
+        switch retirement.reply {
+        case nil: result = .notNeeded
+        case .ok: result = .restored
+        case .conflict: result = .conflict
+        default: result = process.terminationStatus == 0 ? .restored : .failed
         }
+        retirement.completions.forEach { $0(result) }
     }
 
     func waitForQueuedWork() {
         let done = DispatchSemaphore(value: 0)
-        queue.async { done.signal() }
+        end { _ in done.signal() }
         _ = done.wait(timeout: .now() + .milliseconds(1250))
     }
 
@@ -287,7 +326,7 @@ private final class GammaHelperTransport: @unchecked Sendable {
         private let output: FileHandle
         private var usable = true
 
-        init() throws {
+        init(helperURL: URL, onExit: @escaping @Sendable (Process) -> Void) throws {
             let commands = Pipe()
             let replies = Pipe()
             input = commands.fileHandleForWriting
@@ -299,19 +338,19 @@ private final class GammaHelperTransport: @unchecked Sendable {
                   fcntl(inputFD, F_SETNOSIGPIPE, 1) != -1
             else { throw POSIXError(.EIO) }
 
-            process.executableURL = Bundle.main.bundleURL
-                .appendingPathComponent("Contents/Helpers/LumaLumaGammaHelper")
+            process.executableURL = helperURL
             process.standardInput = commands
             process.standardOutput = replies
             process.standardError = FileHandle.nullDevice
+            process.terminationHandler = onExit
             try process.run()
             try? commands.fileHandleForReading.close()
             try? replies.fileHandleForWriting.close()
         }
 
-        func request(_ command: String) -> GammaHelperReply {
+        func request(_ command: String, allowsBusy: Bool = false) -> GammaHelperReply {
             guard usable, process.isRunning else { return .error }
-            guard let reply = exchange(command) else {
+            guard let reply = exchange(command), allowsBusy || reply != .busy else {
                 // A later reply could belong to the timed-out command. Close this stream
                 // instead of mistaking that reply for an acknowledgement of rollback.
                 close()
@@ -343,11 +382,8 @@ private final class GammaHelperTransport: @unchecked Sendable {
                 guard count > 0 else { return nil }
                 response.append(contentsOf: buffer.prefix(count))
                 if let newline = response.firstIndex(of: 10) {
-                    guard newline == response.count - 1,
-                          let reply = GammaHelperReply(rawValue: String(decoding: response[..<newline], as: UTF8.self)),
-                          reply != .busy
-                    else { return nil }
-                    return reply
+                    guard newline == response.count - 1 else { return nil }
+                    return GammaHelperReply(rawValue: String(decoding: response[..<newline], as: UTF8.self))
                 }
                 guard response.count < buffer.count else { return nil }
             }

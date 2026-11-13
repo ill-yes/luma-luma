@@ -11,7 +11,7 @@ Use macOS 14 or newer and the Xcode Command Line Tools with Swift 5.9 or newer.
 open 'dist/Luma Luma.app'
 ```
 
-The build produces a locally ad-hoc-signed app for the Mac it was built on. Move it to Applications before enabling **Open at login**. The first launch opens the controls. Click the sun in the menu bar to reopen them, or right-click it to toggle the last effect. You can also reopen the app from Finder to reach its controls.
+The build produces a locally ad-hoc-signed app for the Mac it was built on. Move it to Applications before enabling **Open at login**. Click the sunrise icon in the menu bar for the controls and **Settings…**, or right-click to toggle the last effect. You can also reopen the app from Finder to reach its controls.
 
 ## Controls
 
@@ -27,7 +27,7 @@ For **Entire display** on a built-in XDR display, set macOS display brightness t
 
 Quit other apps that modify display curves before using built-in full-display Boost. If the curve changes after Luma Luma starts, it reports a conflict. Turning Boost off, sleeping, locking or quitting ends the effect and restores the baseline curve if Luma Luma still owns it.
 
-Custom keyboard shortcuts use Carbon global hotkeys. A transient brightness indicator shows keyboard adjustments and can be switched off in **Settings → Shortcuts**. To use the native brightness keys or hardware brightness sync, enable the corresponding option and grant Luma Luma Accessibility access in System Settings. With Boost selected, the brighter key can continue into HDR when the Apple backlight reaches its SDR maximum, including during a held press. Hardware sync uses the macOS DisplayServices interface when at least two selected Apple displays report backlight control. DDC monitors are outside this feature's scope.
+Custom keyboard shortcuts use Carbon global hotkeys. The brightness indicator can be switched off in **Settings → Shortcuts**. Enable **Use display brightness keys** there and grant Luma Luma Accessibility access in System Settings. At maximum macOS brightness, the next **Brighter** press starts HDR boost, including from **Off**. **Darker** steps through HDR and returns to macOS brightness at zero. Hold Shift and Option for smaller steps. The keyboard level is temporary. Manual Boost uses the saved slider setting. Hardware sync uses DisplayServices when at least two selected Apple displays report backlight control.
 
 In macOS Shortcuts, use the built-in **Open URLs** action with `lumaluma://on`, `lumaluma://off`, or `lumaluma://toggle`. The app bundle registers these three commands with macOS.
 

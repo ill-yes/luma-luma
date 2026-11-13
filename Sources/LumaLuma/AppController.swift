@@ -36,6 +36,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var shortcutError: String?
     @Published private(set) var loginMessage: String?
     @Published private(set) var paused = false
+    @Published private var keyboardBoost: Double?
+
+    var boostStrength: Double { keyboardBoost ?? preferences.boost }
 
     private let log = Logger(subsystem: "dev.illyes.lumaluma", category: "display")
     private let renderer = DisplayRenderer()
@@ -135,13 +138,23 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func select(_ next: LightingMode) {
+        keyboardBoost = nil
+        setMode(next)
+        queueRefresh()
+        updateRefreshTimer()
+    }
+
+    private func setMode(_ next: LightingMode) {
         guard next != mode else { return }
         if next != .off { lastMode = next }
         mode = next
         log.info("Selected mode \(next.rawValue, privacy: .public)")
         updateStatusItem()
-        queueRefresh()
-        updateRefreshTimer()
+    }
+
+    func setManualBoost(_ strength: Double) {
+        keyboardBoost = nil
+        preferences.boost = strength
     }
 
     func toggle() {
@@ -227,11 +240,18 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func updateStatusItem() {
-        let symbol = NSImage(systemSymbolName: mode.symbol, accessibilityDescription: "Luma Luma")
-        symbol?.isTemplate = true
-        statusItem?.button?.image = symbol
-        statusItem?.button?.toolTip = "Luma Luma · \(mode.title)"
-        statusItem?.button?.setAccessibilityLabel("Luma Luma")
+        let active: Bool
+        switch mode {
+        case .off: active = false
+        case .boost: active = (report?.activeBoostDisplayCount ?? 0) > 0
+        case .eclipse: active = preferences.dim > 0 && (report?.displayCount ?? 0) > 0
+        case .ring: active = preferences.ringStrength > 0 && (report?.displayCount ?? 0) > 0
+        }
+        let button = statusItem?.button
+        button?.image = MenuBarIcon.image(active: active && !paused)
+        button?.toolTip = "Luma Luma · \(mode.title)"
+        button?.setAccessibilityLabel("Luma Luma")
+        button?.setAccessibilityValue(paused ? "Paused" : mode.title)
     }
 
     @objc private func statusPressed() {
@@ -314,7 +334,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func updateRefreshTimer() {
-        let refreshBoost = mode == .boost && preferences.boost > 0 &&
+        let refreshBoost = mode == .boost && boostStrength > 0 &&
             (preferences.region == .frontWindow || (preferences.region == .full && preferences.scope != .external))
         let pollPower = powerSource == nil && preferences.powerRule != .manual
         guard !paused, refreshBoost || pollPower else {
@@ -351,7 +371,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private func refreshDisplays() {
         guard ready, !paused else { return }
         let rendered = renderer.apply(DisplayRenderSettings(
-            boost: mode == .boost ? preferences.boost : 0,
+            boost: mode == .boost ? boostStrength : 0,
             dim: mode == .eclipse ? preferences.dim : 0,
             scope: preferences.scope,
             region: preferences.region,
@@ -363,6 +383,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             report = rendered
             log.info("Mode \(self.mode.rawValue, privacy: .public); selected displays \(rendered.displayCount); rendered boost \(rendered.activeBoostDisplayCount) / \(rendered.targetBoostDisplayCount); headroom \(rendered.currentHeadroom, format: .fixed(precision: 2)) / \(rendered.potentialHeadroom, format: .fixed(precision: 2))")
         }
+        updateStatusItem()
     }
 
     private func queueRefresh() {
@@ -393,8 +414,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             select(.boost)
             value = preferences.boost
         case .boost:
-            value = min(1, max(0, preferences.boost + amount))
-            if value != preferences.boost { preferences.boost = value }
+            value = min(1, max(0, boostStrength + amount))
+            setManualBoost(value)
         case .eclipse:
             let dim = min(0.95, max(0, preferences.dim - amount))
             if dim != preferences.dim { preferences.dim = dim }
@@ -403,30 +424,67 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             value = min(1, max(0, preferences.ringStrength + amount))
             if value != preferences.ringStrength { preferences.ringStrength = value }
         }
+        showBrightness(value, on: screen)
+    }
+
+    private func showBrightness(_ value: Double, percentage: Int? = nil, on screen: NSScreen) {
         if preferences.showBrightnessIndicator {
             let indicator = brightnessIndicator ?? BrightnessIndicator()
             brightnessIndicator = indicator
-            indicator.show(label: mode.title, symbol: mode.symbol, value: value, on: screen)
+            let indicatingBoost = percentage != nil
+            indicator.show(
+                label: indicatingBoost ? LightingMode.boost.title : mode.title,
+                symbol: indicatingBoost ? LightingMode.boost.symbol : mode.symbol,
+                value: value, percentage: percentage, on: screen
+            )
         }
     }
 
     private func handleBrightnessKey(increase: Bool, fine: Bool) -> Bool {
         guard !paused else { return false }
-        let step = fine ? 1.0 / 64 : 1.0 / 16
+        let step = BrightnessKeyRouting.step(fine: fine)
         let change = increase ? step : -step
         let selected = NSScreen.screens(in: preferences.scope)
-        guard let screen = selected.first?.screen else { return false }
-        let controllable = selected.compactMap { display in
-            hardware.brightness(of: display.id).map { (display.id, $0) }
+        guard let reference = selected.first(where: { CGDisplayIsBuiltin($0.id) != 0 }) ?? selected.first else {
+            return false
         }
-        let level = controllable.first?.1
+        let level = hardware.brightness(of: reference.id)
+        let screen = reference.screen
         if preferences.nativeBrightnessKeys {
             switch mode {
-            case .boost where (report?.edrDisplayCount ?? 0) > 0
-                && (preferences.region != .frontWindow || (report?.targetBoostDisplayCount ?? 0) > 0):
-                guard increase ? (level ?? 0) >= 0.999 : preferences.boost > 0 else { break }
-                changeLevel(by: change, on: screen)
-                return true
+            case .off, .boost:
+                let strength = mode == .boost ? boostStrength : 0
+                let state = renderer.keyBoostState(
+                    displayID: reference.id, screen: screen, region: preferences.region,
+                    requested: strength > 0
+                )
+                let decision = BrightnessKeyRouting.decide(
+                    increase: increase, fine: fine, hardwareLevel: level, strength: strength,
+                    boostState: state, restoring: renderer.isRestoringCurve
+                )
+                switch decision {
+                case .waitForRestoration:
+                    return true
+                case .setBoost(let value):
+                    if value == 0 {
+                        // Release the curve before any subsequent hardware adjustment.
+                        keyboardBoost = 0
+                        refreshDisplays()
+                        setMode(.off)
+                        keyboardBoost = nil
+                    } else {
+                        keyboardBoost = value
+                        setMode(.boost)
+                    }
+                    queueRefresh()
+                    updateRefreshTimer()
+                    let builtInFull = CGDisplayIsBuiltin(reference.id) != 0 && preferences.region == .full
+                    let percentage = builtInFull ? Int(((1 + 0.45 * value) * 100).rounded()) : nil
+                    showBrightness(value, percentage: percentage, on: screen)
+                    return true
+                case .system:
+                    break
+                }
             case .eclipse where preferences.dim > 0 || (!increase && (level ?? 1) <= 0.001):
                 changeLevel(by: change, on: screen)
                 return true
@@ -436,8 +494,14 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             default: break
             }
         }
-        guard preferences.syncHardwareBrightness, let level, controllable.count > 1 else { return false }
-        return hardware.setBrightness(level + change, displays: controllable.map(\.0))
+        guard preferences.syncHardwareBrightness, let level else { return false }
+        let followers = selected.map(\.id).filter { $0 != reference.id && hardware.brightness(of: $0) != nil }
+        guard !followers.isEmpty else { return false }
+        let result = hardware.setBrightness(level + change, reference: reference.id, followers: followers)
+        if !result.failedFollowers.isEmpty {
+            log.info("Brightness sync updated the reference; \(result.failedFollowers.count) other displays did not update")
+        }
+        return result.referenceSucceeded
     }
 
     private func installNotifications() {
@@ -482,6 +546,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if paused {
             renderer.clear(waitForGammaRestoration: true)
             brightnessIndicator?.hide()
+            updateStatusItem()
         } else {
             refreshAutomation()
             queueRefresh()

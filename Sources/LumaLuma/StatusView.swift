@@ -7,7 +7,7 @@ struct StatusView: View {
     private var percent: Int {
         switch controller.mode {
         case .off: 0
-        case .boost: Int((preferences.boost * 100).rounded())
+        case .boost: Int((controller.boostStrength * 100).rounded())
         case .eclipse: Int((preferences.dim * 100).rounded())
         case .ring: Int((preferences.ringStrength * 100).rounded())
         }
@@ -30,7 +30,7 @@ struct StatusView: View {
     }
 
     private var boostCaption: String {
-        guard preferences.boost > 0 else { return "Boost set to zero" }
+        guard controller.boostStrength > 0 else { return "Boost set to zero" }
         guard let report = controller.report else { return "Starting HDR boost" }
         switch report.gammaStatus {
         case .starting: return "Preparing built-in display HDR"
@@ -92,7 +92,10 @@ struct StatusView: View {
             case .off:
                 EmptyView()
             case .boost:
-                slider("Boost", value: $preferences.boost, range: 0...1)
+                slider("Boost", value: Binding(
+                    get: { controller.boostStrength },
+                    set: { controller.setManualBoost($0) }
+                ), range: 0...1)
                 Picker("Area", selection: $preferences.region) {
                     ForEach(BoostRegion.allCases) { region in
                         Text(region.title).tag(region)
@@ -109,10 +112,12 @@ struct StatusView: View {
                 Button("Settings…", systemImage: "gearshape") {
                     controller.showPreferences()
                 }
+                .buttonStyle(.bordered)
                 Spacer()
                 Button("Quit") { controller.quit() }
+                    .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .controlSize(.small)
         }
         .padding(15)
         .frame(width: 326)
@@ -147,6 +152,10 @@ struct PreferencesHost: View {
         VStack(spacing: 0) {
             PreferencesView(
                 preferences: controller.preferences,
+                boost: Binding(
+                    get: { controller.boostStrength },
+                    set: { controller.setManualBoost($0) }
+                ),
                 loginEnabled: controller.loginEnabled,
                 setLoginEnabled: controller.setLoginEnabled,
                 shortcutError: controller.shortcutError

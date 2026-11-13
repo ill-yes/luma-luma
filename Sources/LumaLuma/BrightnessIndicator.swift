@@ -23,9 +23,9 @@ final class BrightnessIndicator {
         panel.contentView = NSHostingView(rootView: IndicatorView(model: model))
     }
 
-    func show(label: String, symbol: String, value: Double, on screen: NSScreen) {
+    func show(label: String, symbol: String, value: Double, percentage: Int? = nil, on screen: NSScreen) {
         dismiss?.cancel()
-        model.update(label: label, symbol: symbol, value: value)
+        model.update(label: label, symbol: symbol, value: value, percentage: percentage)
         let visible = screen.visibleFrame
         panel.setFrameOrigin(NSPoint(
             x: visible.midX - panel.frame.width / 2,
@@ -53,11 +53,13 @@ final class BrightnessIndicator {
         @Published private(set) var label = ""
         @Published private(set) var symbol = "sun.max"
         @Published private(set) var value = 0.0
+        @Published private(set) var percentage: Int?
 
-        func update(label: String, symbol: String, value: Double) {
+        func update(label: String, symbol: String, value: Double, percentage: Int?) {
             self.label = label
             self.symbol = symbol
             self.value = value
+            self.percentage = percentage
         }
     }
 
@@ -70,7 +72,7 @@ final class BrightnessIndicator {
                     Label(model.label, systemImage: model.symbol)
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 4)
-                    Text(model.value, format: .percent.precision(.fractionLength(0)))
+                    Text(displayedValue, format: .percent.precision(.fractionLength(0)))
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -87,6 +89,10 @@ final class BrightnessIndicator {
                 RoundedRectangle(cornerRadius: 17)
                     .strokeBorder(.primary.opacity(0.12))
             }
+        }
+
+        private var displayedValue: Double {
+            model.percentage.map { Double($0) / 100 } ?? model.value
         }
     }
 }

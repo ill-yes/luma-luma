@@ -2,6 +2,7 @@ import Foundation
 
 public enum GammaReply: String {
     case ok
+    case busy
     case conflict
     case unsupported
     case error

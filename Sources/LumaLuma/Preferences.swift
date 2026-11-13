@@ -99,6 +99,7 @@ final class Preferences: ObservableObject {
 
 struct PreferencesView: View {
     @ObservedObject var preferences: Preferences
+    @Binding var boost: Double
     let loginEnabled: Bool
     let setLoginEnabled: @MainActor (Bool) -> Void
     let shortcutError: String?
@@ -156,7 +157,7 @@ struct PreferencesView: View {
             }
 
             Section("Effects") {
-                Slider(value: $preferences.boost, in: 0...1) { Text("Boost strength") }
+                Slider(value: $boost, in: 0...1) { Text("Boost strength") }
                 Slider(value: $preferences.dim, in: 0...0.95) { Text("Eclipse dimming") }
             }
 
@@ -196,7 +197,7 @@ struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                 }
             } footer: {
-                Text("To adjust an active effect with the display brightness keys, allow Luma Luma in System Settings › Privacy & Security › Accessibility, then turn this option off and back on.")
+                Text("Keep pressing the brightness-up key at maximum brightness to start HDR on a supported display. Allow Luma Luma in System Settings › Privacy & Security › Accessibility, then turn this option off and back on.")
             }
 
             Section {

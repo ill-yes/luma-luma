@@ -41,16 +41,16 @@ final class AppleBrightness {
         return Double(value)
     }
 
-    func setBrightness(_ brightness: Double, displays: [CGDirectDisplayID]) -> Bool {
-        guard let write else { return false }
+    func setBrightness(
+        _ brightness: Double,
+        reference: CGDirectDisplayID,
+        followers: [CGDirectDisplayID]
+    ) -> BacklightSyncResult {
+        guard let write else { return .referenceFailed }
         let level = Float(min(1, max(0, brightness)))
-        var wrote = false
-        for display in displays {
-            if write(display, level) == 0 {
-                wrote = true
-            }
+        return BacklightSyncResult.apply(reference: reference, followers: followers) {
+            write($0, level) == 0
         }
-        return wrote
     }
 }
 
