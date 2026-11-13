@@ -65,10 +65,16 @@ The rebuilt app opened as **Luma Luma**. Its controls and settings showed the ne
 
 The new bundle identity requires its own macOS Accessibility grant. The app currently reports that this grant is missing. Physical brightness-key testing for `dev.illyes.lumaluma` is pending that grant.
 
+## 📦 Hosted CI and releases
+
+The first **Build and test** GitHub Actions run passed at commit `b26d61d`. It ran the existing tests, built the release app and verified its signature and bundled license. [CI result](https://github.com/ill-yes/luma-luma/actions/runs/43431125097)
+
+The manual **Release LumaLuma** workflow adds Universal packaging and release-publication checks. Its first end-to-end release and published-download verification are pending. The release tests cover version selection, re-runs, draft recovery, conflicts, incomplete uploads and publication failures.
+
 ## 🔎 Remaining coverage
 
 - Grant Accessibility access to the renamed app and repeat the physical brightness-key checks above.
-- The first hosted GitHub Actions run is pending publication and a workflow trigger. Local build and test results are available above.
+- Complete the first manual release, verify its downloaded Universal app and confirm a re-run recognizes the published release.
 - Synchronized external displays and partial hardware synchronization still need device testing.
 - Restoration after sleep, session lock and quitting still needs explicit device testing.
 - Menu bar appearance should be checked in both light and dark appearances.

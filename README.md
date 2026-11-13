@@ -34,8 +34,18 @@ preparing, active or unavailable. [Display compatibility and limits](docs/USAGE.
 ### Requirements
 
 - macOS 14 or newer.
-- Swift 6.0 or newer, provided by Xcode or the Xcode Command Line Tools.
+- Swift 6.0 or newer, provided by Xcode or the Xcode Command Line Tools, for building from source.
 - An HDR-capable display for Boost. Eclipse and Ring Light can be used on SDR displays.
+
+### Download and install
+
+Download the latest `LumaLuma-<version>-macos-universal.zip` and its `.sha256`
+file from the release page. The Universal app supports Apple Silicon and Intel
+Macs. Access currently requires a GitHub account with permission to the private
+repository. [Download Luma Luma](https://github.com/ill-yes/luma-luma/releases/latest)
+
+Expand the ZIP, move **Luma Luma.app** to **Applications** and open it. Releases use
+ad-hoc signing. macOS may require explicit approval on first launch. [Installation and updates](docs/USAGE.md#-installation-and-updates)
 
 ### Build and launch
 

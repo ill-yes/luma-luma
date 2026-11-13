@@ -1,0 +1,85 @@
+name: Release LumaLuma
+run-name: Release LumaLuma 0.1.${{ github.run_number }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lumaluma-release
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      published: ${{ steps.prepare.outputs.published }}
+      artifact_name: ${{ steps.artifact.outputs.name }}
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Resolve release version and retry state
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py prepare
+      - name: Name this build artifact
+        id: artifact
+        run: echo "name=lumaluma-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Show toolchain
+        if: steps.prepare.outputs.published != 'true'
+        run: swift --version
+      - name: Test release publication
+        if: steps.prepare.outputs.published != 'true'
+        run: python3 -m unittest discover -s Tests/ReleaseTests -v
+      - name: Test display behavior
+        if: steps.prepare.outputs.published != 'true'
+        run: ./scripts/test-hdr.sh
+      - name: Build and verify Universal download
+        if: steps.prepare.outputs.published != 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
+          RELEASE_BUILD_NUMBER: ${{ steps.prepare.outputs.build_number }}
+        run: ./scripts/package-release.sh "$RELEASE_VERSION" "$RELEASE_BUILD_NUMBER"
+      - name: Upload verified download
+        if: steps.prepare.outputs.published != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: |
+            dist/LumaLuma-${{ steps.prepare.outputs.version }}-macos-universal.zip
+            dist/LumaLuma-${{ steps.prepare.outputs.version }}-macos-universal.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release publisher
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download verified build
+        if: needs.build.outputs.published != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist
+      - name: Publish or verify existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py publish

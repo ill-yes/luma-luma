@@ -4,6 +4,17 @@ Configure Luma Luma's effects, brightness keys and automation.
 
 [Project overview](../README.md) · [Development](DEVELOPMENT.md) · [Validation](VALIDATION.md)
 
+## 📥 Installation and updates
+
+1. Open the release page and download `LumaLuma-<version>-macos-universal.zip` and its matching `.sha256` file. Sign in with an account that can access the private repository. [Latest release](https://github.com/ill-yes/luma-luma/releases/latest)
+2. In the download directory, verify the ZIP with `shasum -a 256 -c LumaLuma-<version>-macos-universal.zip.sha256`, substituting the downloaded version.
+3. Expand the ZIP and move **Luma Luma.app** to **Applications**.
+4. Open the app and configure the optional brightness-key permission below.
+
+The Universal app contains native code for Apple Silicon and Intel Macs and requires macOS 14 or newer. Releases use ad-hoc signing. If macOS requests approval for the downloaded app, follow Apple's instructions for opening trusted software. [Apple's first-launch guidance](https://support.apple.com/en-us/102445)
+
+To update, quit Luma Luma, replace the app in **Applications** with the newly downloaded version and reopen it. macOS may require you to re-add the updated app to its Accessibility permission list.
+
 ## 🌅 Menu bar controls
 
 Click the sunrise icon in the menu bar to open the controls. Choose **Boost**, **Eclipse** or **Ring Light**, then use the switch to turn the selected effect on or off.

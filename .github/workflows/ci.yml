@@ -19,6 +19,8 @@ jobs:
           persist-credentials: false
       - name: Show toolchain
         run: swift --version
+      - name: Test release publication
+        run: python3 -m unittest discover -s Tests/ReleaseTests -v
       - name: Run tests
         run: ./scripts/test-hdr.sh
       - name: Build release app

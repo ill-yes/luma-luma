@@ -28,6 +28,20 @@ For a debug app bundle, use
 
 The build script compiles the app and helper for the host architecture. It packages the icon and MIT License, validates the property list, and applies local ad-hoc signatures. The output is `dist/Luma Luma.app`.
 
+For a Universal app containing both `arm64` and `x86_64` code, run
+
+```sh
+./scripts/build-app.sh release universal
+```
+
+Both the app and gamma helper are built for each architecture, then merged with `lipo`. Optional `LUMA_APP_VERSION` and `LUMA_BUILD_NUMBER` values set the packaged app's version. For example, to build and validate a versioned Universal ZIP and its SHA-256 checksum, run
+
+```sh
+./scripts/package-release.sh 0.1.1 1
+```
+
+This produces `dist/LumaLuma-0.1.1-macos-universal.zip` and `dist/LumaLuma-0.1.1-macos-universal.zip.sha256`. Packaging checks the two architectures, macOS 14 deployment target, version fields, signatures, bundled license and icon. It also unpacks the ZIP and verifies the resulting app.
+
 Release packaging strips linker debug metadata from both executables before signing. It then scans the executable bytes for the checkout path and private home, volume and temporary-directory paths. A match or scan error fails the build before the staged bundle is installed. Debug builds retain their symbols for local debugging.
 
 Verify the result with
@@ -95,4 +109,24 @@ Turning Boost off, sleeping, locking and quitting release the session. Pipe disc
 
 `./scripts/test-hdr.sh` compiles five standalone test executables with warnings treated as errors. It runs each suite and removes its temporary test directory. Review the suite coverage and measured hardware results. [Validation](VALIDATION.md)
 
-The GitHub Actions workflow runs the tests and release bundle build on `macos-15` for pushes to `main` and pull requests. It uses read-only repository access, compares the bundled license and verifies the app signature. The first hosted run is pending publication and a workflow trigger.
+The **Build and test** GitHub Actions workflow runs the tests and release bundle build on `macos-15` for pushes to `main` and pull requests. It uses read-only repository access, compares the bundled license and verifies the app signature. The first hosted run passed at commit `b26d61d`. [CI result](https://github.com/ill-yes/luma-luma/actions/runs/43431125097)
+
+### Manual releases
+
+Open **Actions → Release LumaLuma → Run workflow** and select the ref to build. The default is `main`; the workflow builds the commit fixed at dispatch time. The workflow definition is `.github/workflows/release.yml`.
+
+Each new dispatch uses version `0.1.<github.run_number>`, starting at `0.1.1`, and the same run number as its build number. A re-run keeps its original version. Failed runs can leave gaps. The shared release concurrency group processes runs one at a time and can queue up to 100 waiting runs.
+
+The build job runs the tests and creates the Universal ZIP and checksum. Only the publishing job receives `contents: write`. It uploads and verifies both files in a draft before publishing the release. A re-run resumes its own draft or verifies its already published release. Version and commit conflicts fail with an error. The highest published version is designated **Latest**.
+
+Intermediate build artifacts are retained for seven days. To retry a failed publication after they expire, choose **Re-run all jobs** to rebuild the download for the same version.
+
+GitHub requires additional workflow permissions when the release commit changes files under `.github/workflows/` relative to the current default branch. The built-in `GITHUB_TOKEN` cannot receive that permission. If such a release write fails with HTTP 403 or 404, start a new release from a ref whose workflow files match the default branch, or have a maintainer complete the release with the required workflow access. [GitHub release permissions](https://docs.github.com/en/rest/releases/releases#create-a-release)
+
+Release checks can be run locally with
+
+```sh
+python3 -m unittest discover -s Tests/ReleaseTests -v
+```
+
+The release notes link to installation instructions and identify the version, source commit and workflow run. Downloads use ad-hoc signing, so macOS may request first-launch approval. [Release downloads](https://github.com/ill-yes/luma-luma/releases/latest)
