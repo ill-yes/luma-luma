@@ -28,6 +28,8 @@ For a debug app bundle, use
 
 The build script compiles the app and helper for the host architecture. It packages the icon and MIT License, validates the property list, and applies local ad-hoc signatures. The output is `dist/Luma Luma.app`.
 
+Release packaging strips linker debug metadata from both executables before signing. It then scans the executable bytes for the checkout path and private home, volume and temporary-directory paths. A match or scan error fails the build before the staged bundle is installed. Debug builds retain their symbols for local debugging.
+
 Verify the result with
 
 ```sh

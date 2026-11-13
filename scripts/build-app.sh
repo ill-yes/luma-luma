@@ -17,6 +17,27 @@ app="$staging_dir/Luma Luma.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
 cp "$binary_dir/LumaLuma" "$app/Contents/MacOS/"
 cp "$binary_dir/LumaLumaGammaHelper" "$app/Contents/Helpers/"
+if [[ "$configuration" == release ]]; then
+    for binary in "$app/Contents/MacOS/LumaLuma" "$app/Contents/Helpers/LumaLumaGammaHelper"; do
+        # Remove linker debug maps, including absolute paths to build objects.
+        xcrun strip -S "$binary"
+        scan_status=0
+        LC_ALL=C grep -aFq \
+            -e "$(pwd)/" -e '/Users/' -e '/home/' -e '/Volumes/' -e '/var/folders/' \
+            "$binary" || scan_status=$?
+        case "$scan_status" in
+            0)
+                printf 'Private build path found in release binary %s\n' "${binary##*/}" >&2
+                exit 1
+                ;;
+            1) ;;
+            *)
+                printf 'Could not inspect release binary %s\n' "${binary##*/}" >&2
+                exit 1
+                ;;
+        esac
+    done
+fi
 cp Packaging/Info.plist "$app/Contents/"
 cp Packaging/LumaLuma.icns "$app/Contents/Resources/"
 cp LICENSE "$app/Contents/Resources/LICENSE"
