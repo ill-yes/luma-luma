@@ -466,21 +466,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                 case .waitForRestoration:
                     return true
                 case .setBoost(let value):
-                    if value == 0 {
-                        // Release the curve before any subsequent hardware adjustment.
-                        keyboardBoost = 0
-                        refreshDisplays()
-                        setMode(.off)
-                        keyboardBoost = nil
-                    } else {
-                        keyboardBoost = value
-                        setMode(.boost)
-                    }
-                    queueRefresh()
-                    updateRefreshTimer()
-                    let builtInFull = CGDisplayIsBuiltin(reference.id) != 0 && preferences.region == .full
-                    let percentage = builtInFull ? Int(((1 + 0.45 * value) * 100).rounded()) : nil
-                    showBrightness(value, percentage: percentage, on: screen)
+                    applyKeyboardBoost(value, on: screen, displayID: reference.id)
                     return true
                 case .system:
                     break
@@ -502,6 +488,23 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             log.info("Brightness sync updated the reference; \(result.failedFollowers.count) other displays did not update")
         }
         return result.referenceSucceeded
+    }
+
+    private func applyKeyboardBoost(_ value: Double, on screen: NSScreen, displayID: CGDirectDisplayID) {
+        keyboardBoost = value
+        if value == 0 {
+            // Start restoring the curve before the next brightness key event can reach macOS.
+            refreshDisplays()
+            setMode(.off)
+            keyboardBoost = nil
+        } else {
+            setMode(.boost)
+        }
+        queueRefresh()
+        updateRefreshTimer()
+        let builtInFull = CGDisplayIsBuiltin(displayID) != 0 && preferences.region == .full
+        let percentage = builtInFull ? Int(((1 + 0.45 * value) * 100).rounded()) : nil
+        showBrightness(value, percentage: percentage, on: screen)
     }
 
     private func installNotifications() {

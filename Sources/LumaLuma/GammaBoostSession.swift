@@ -53,6 +53,8 @@ final class GammaBoostSession {
         var inFlight = false
         var appliedGain: Double?
         var lastCommand = ContinuousClock.now
+
+        var isOngoing: Bool { status == .starting || status == .active }
     }
 
     var onStatusChanged: (() -> Void)?
@@ -60,8 +62,8 @@ final class GammaBoostSession {
     var isRestoring: Bool { cleanupToken != nil }
 
     var needsTrigger: Bool {
-        guard let attempt, attempt.acquired else { return false }
-        return attempt.status == .starting || attempt.status == .active
+        guard let attempt else { return false }
+        return attempt.acquired && attempt.isOngoing
     }
 
     private let transport: GammaHelperTransport
@@ -84,7 +86,7 @@ final class GammaBoostSession {
             begin()
         }
         guard var current = attempt else { return .failed }
-        guard current.status == .starting || current.status == .active else { return current.status }
+        guard current.isOngoing else { return current.status }
 
         if current.status == .starting {
             let decision = current.gate.sample(
@@ -120,8 +122,7 @@ final class GammaBoostSession {
     }
 
     func stop(waitForRestoration: Bool = false) {
-        if let attempt, attempt.status == .starting || attempt.status == .active,
-           attempt.acquired || attempt.inFlight {
+        if let attempt, attempt.isOngoing, attempt.acquired || attempt.inFlight {
             release()
         }
         attempt = nil
@@ -159,9 +160,7 @@ final class GammaBoostSession {
         attempt?.lastCommand = .now
         transport.send(command) { [weak self] reply in
             Task { @MainActor [weak self] in
-                guard let self, attempt?.token == token,
-                      attempt?.status == .starting || attempt?.status == .active
-                else { return }
+                guard let self, attempt?.token == token, attempt?.isOngoing == true else { return }
                 attempt?.inFlight = false
                 if reply != .ok {
                     finish(reply.boostStatus)
