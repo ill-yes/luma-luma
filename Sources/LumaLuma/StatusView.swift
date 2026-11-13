@@ -1,0 +1,144 @@
+import SwiftUI
+
+struct StatusView: View {
+    @ObservedObject var controller: AppController
+    @ObservedObject var preferences: Preferences
+
+    private var percent: Int {
+        switch controller.mode {
+        case .off: 0
+        case .boost: Int((preferences.boost * 100).rounded())
+        case .eclipse: Int((preferences.dim * 100).rounded())
+        case .ring: Int((preferences.ringStrength * 100).rounded())
+        }
+    }
+
+    private var caption: String {
+        if controller.paused { return "Paused while the display is inactive" }
+        if controller.report?.displayCount == 0 { return "No displays match your selection" }
+        if controller.mode == .boost {
+            if controller.report?.edrDisplayCount == 0 { return "No HDR display available" }
+            if (controller.report?.currentHeadroom ?? 1) <= 1.01 { return "Waiting for HDR headroom" }
+            return "HDR display brightness"
+        }
+        switch controller.mode {
+        case .off: return "Standard display brightness"
+        case .eclipse: return "Extra dimming"
+        case .ring: return "Camera fill light"
+        case .boost: return "HDR display brightness"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: controller.mode.symbol)
+                    .font(.system(size: 21, weight: .medium))
+                    .foregroundStyle(controller.mode == .off ? Color.secondary : .accentColor)
+                    .frame(width: 30)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Luma Luma")
+                        .font(.headline)
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("Lighting", isOn: Binding(
+                    get: { controller.mode != .off },
+                    set: { _ in controller.toggle() }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("Turn Luma Luma on or off")
+            }
+
+            Picker("Lighting mode", selection: Binding(
+                get: { controller.mode },
+                set: { controller.select($0) }
+            )) {
+                ForEach(LightingMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            switch controller.mode {
+            case .off:
+                EmptyView()
+            case .boost:
+                slider("Boost", value: $preferences.boost, range: 0...1)
+                Picker("Area", selection: $preferences.region) {
+                    Text("Entire display").tag(BoostRegion.full)
+                    Text("Side-by-side comparison").tag(BoostRegion.split)
+                    Text("Frontmost window").tag(BoostRegion.frontWindow)
+                }
+            case .eclipse:
+                slider("Dimming", value: $preferences.dim, range: 0...0.95)
+            case .ring:
+                slider("Light intensity", value: $preferences.ringStrength, range: 0...1)
+            }
+
+            Divider()
+            HStack {
+                Button("Settings…", systemImage: "gearshape") {
+                    controller.showPreferences()
+                }
+                Spacer()
+                Button("Quit") { controller.quit() }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(15)
+        .frame(width: 326)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func slider(
+        _ label: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label)
+                Spacer()
+                Text("\(percent)%")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            Slider(value: value, in: range) { Text(label) }
+                .labelsHidden()
+                .accessibilityValue("\(percent)%")
+        }
+    }
+}
+
+struct PreferencesHost: View {
+    @ObservedObject var controller: AppController
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PreferencesView(
+                preferences: controller.preferences,
+                loginEnabled: controller.loginEnabled,
+                setLoginEnabled: controller.setLoginEnabled,
+                shortcutError: controller.shortcutError
+            )
+            if let loginMessage = controller.loginMessage {
+                Text(loginMessage)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 15)
+            }
+        }
+        .toolbar {
+            Button("Show Controls", systemImage: "sun.max") { controller.showControls() }
+        }
+    }
+}

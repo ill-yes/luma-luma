@@ -1,0 +1,34 @@
+# Luma Luma
+
+Luma Luma is an MIT-licensed macOS menu bar app for using the extra HDR brightness of XDR displays. All controls work locally and are available without an account or license key.
+
+## Build and run
+
+Use macOS 14 or newer and the Xcode Command Line Tools with Swift 5.9 or newer.
+
+```sh
+./scripts/build-app.sh
+open 'dist/Luma Luma.app'
+```
+
+The build produces a locally ad-hoc-signed app for the Mac it was built on. Move it to Applications before enabling **Open at login**. The first launch opens the controls. Click the sun in the menu bar to reopen them, or right-click it to toggle the last effect. You can also reopen the app from Finder to reach its controls.
+
+## Controls
+
+| Control | Behavior |
+| --- | --- |
+| Boost | Adds brightness on selected HDR displays. Choose the full display, a half-screen comparison or the frontmost window. |
+| Eclipse | Dims selected displays below their normal settings. |
+| Ring Light | Adds a screen-edge fill light for video calls, with adjustable intensity, width and warmth. |
+| Power automation | Enable boost on external power or while the battery is above a chosen level. |
+| Shortcuts | Assign global toggle, increase and decrease keys. Native display brightness keys and Apple backlight sync are optional. |
+
+macOS sets the available HDR headroom according to the display, brightness preset, power and temperature. The slider specifies a share of the available boost, capped at a 3× request to the compositor. It does not report nits. Luma Luma suspends its effects when displays sleep or the session locks. Quitting removes all overlays.
+
+Custom keyboard shortcuts use Carbon global hotkeys. To use the native brightness keys or hardware brightness sync, enable the corresponding option and grant Luma Luma Accessibility access in System Settings. Hardware sync uses the macOS DisplayServices interface when at least two selected Apple displays report backlight control. DDC monitors are outside this feature's scope.
+
+In macOS Shortcuts, use the built-in **Open URLs** action with `lumaluma://on`, `lumaluma://off`, or `lumaluma://toggle`. The app bundle registers these three commands with macOS.
+
+## Implementation
+
+Luma Luma is an independent Swift/AppKit and SwiftUI implementation. Boost renders a uniform extended-range Metal layer and multiplies it over the desktop. Eclipse and Ring Light use click-through windows. The renderer uses no gamma-table writes or screen recording. Focus mode locates the first standard on-screen window of the frontmost app through WindowServer metadata.
