@@ -13,6 +13,16 @@ struct DisplayBrightnessSlider: View {
     @GestureState private var isDragging = false
     @FocusState private var isFocused: Bool
 
+    init(
+        control: BrightnessControl,
+        value: Binding<Double>,
+        isHDRRangeAvailable: @escaping () -> Bool
+    ) {
+        self.control = control
+        self._value = value
+        self.isHDRRangeAvailable = isHDRRangeAvailable
+    }
+
     private var label: String {
         control.mode == .boost ? "Boost" : "Brightness"
     }
@@ -185,6 +195,11 @@ struct PreferencesView: View {
     @ObservedObject var preferences: Preferences
     // Use the property wrapper directly so Command Line Tools builds do not need SwiftUIMacros.
     private var profileDisplayID = State<UInt32?>(wrappedValue: nil)
+
+    init(controller: AppController, preferences: Preferences) {
+        self.controller = controller
+        self.preferences = preferences
+    }
 
     private var editedDisplayID: UInt32? {
         controller.profileDisplays.first { $0.id == profileDisplayID.wrappedValue }?.id
