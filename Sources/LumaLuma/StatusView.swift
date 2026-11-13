@@ -132,6 +132,11 @@ struct StatusView: View {
                     .buttonStyle(.plain)
             }
             .controlSize(.small)
+
+            Text(AppVersion.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
         }
         .padding(15)
         .frame(width: 326)
@@ -181,9 +186,24 @@ struct PreferencesHost: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 15)
             }
+            Text(AppVersion.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 12)
         }
         .toolbar {
             Button("Show Controls", systemImage: "sun.max") { controller.showControls() }
         }
     }
+}
+
+private enum AppVersion {
+    static let label: String = {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !version.isEmpty else {
+            return "Development build"
+        }
+        return "Version \(version)"
+    }()
 }

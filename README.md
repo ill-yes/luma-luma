@@ -4,12 +4,16 @@
 
 # Luma Luma
 
-A native macOS menu bar app for HDR brightness, extra dimming and screen-edge lighting.
-Choose an effect, adjust its strength and turn it on when you need it.
+**Make your MacBook display brighter, even when macOS brightness is already at 100%.**
+
+Luma Luma uses available HDR headroom to boost compatible MacBook displays beyond
+their normal SDR brightness. Control the extra brightness from the menu bar or
+keep pressing your MacBook's brightness keys. Extra dimming and screen-edge
+lighting are also included.
 
 **macOS 14+** · **Swift 6+** · **MIT License**
 
-[✨ Features](#-features) · [🚀 Quick start](#-quick-start) · [🎛️ User guide](docs/USAGE.md) · [🛠️ Development](docs/DEVELOPMENT.md) · [🤝 Contributing](CONTRIBUTING.md)
+[✨ Features](#-features) · [🚀 Quick start](#-quick-start) · [🎛️ User guide](docs/USAGE.md) · [🛠️ Development](docs/DEVELOPMENT.md) · [🤝 Contributing](CONTRIBUTING.md) · [☕ Support](#-support-luma-luma)
 
 ## ✨ Features
 
@@ -97,6 +101,12 @@ Run the automated checks with
 The macOS CI workflow runs the same checks and builds the app. Local build outputs
 and temporary test data belong in the ignored `.build/` and `dist/` directories.
 [Developer guide](docs/DEVELOPMENT.md)
+
+## ☕ Support Luma Luma
+
+Support Luma Luma's continued development on Buy Me a Coffee.
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-support-FFDD00?logo=buymeacoffee&logoColor=000)](https://buymeacoffee.com/ill_yes)
 
 ## 📄 License
 
