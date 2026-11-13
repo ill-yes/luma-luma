@@ -4,5 +4,9 @@ import PackageDescription
 let package = Package(
     name: "LumaLuma",
     platforms: [.macOS(.v14)],
-    targets: [.executableTarget(name: "LumaLuma")]
+    targets: [
+        .executableTarget(name: "LumaLuma"),
+        .target(name: "LumaLumaGammaCore"),
+        .executableTarget(name: "LumaLumaGammaHelper", dependencies: ["LumaLumaGammaCore"])
+    ]
 )

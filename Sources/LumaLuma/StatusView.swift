@@ -15,6 +15,9 @@ struct StatusView: View {
 
     private var caption: String {
         if controller.paused { return "Paused while the display is inactive" }
+        if controller.report?.gammaRestorationStatus == .restorationFailed {
+            return "Could not restore the display curve"
+        }
         if controller.mode != .off, controller.report?.displayCount == 0 {
             return "No displays match your selection"
         }
@@ -29,6 +32,14 @@ struct StatusView: View {
     private var boostCaption: String {
         guard preferences.boost > 0 else { return "Boost set to zero" }
         guard let report = controller.report else { return "Starting HDR boost" }
+        switch report.gammaStatus {
+        case .starting: return "Preparing built-in display HDR"
+        case .unavailable: return "Built-in display HDR unavailable"
+        case .conflict: return "Display curve changed by another app"
+        case .failed: return "Could not apply the display curve"
+        case .restorationFailed: return "Could not restore the display curve"
+        case .active, nil: break
+        }
         if report.edrDisplayCount == 0 { return "No HDR display available" }
         if report.targetBoostDisplayCount == 0 { return "Waiting for a frontmost window" }
         if report.hasPendingBoost && report.activeBoostDisplayCount == 0 { return "Starting HDR boost" }

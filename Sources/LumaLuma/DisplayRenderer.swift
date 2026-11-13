@@ -34,6 +34,8 @@ struct DisplayRenderReport: Equatable {
     let targetBoostDisplayCount: Int
     let activeBoostDisplayCount: Int
     let hasPendingBoost: Bool
+    let gammaStatus: GammaBoostStatus?
+    let gammaRestorationStatus: GammaBoostStatus?
     let currentHeadroom: Double
     let potentialHeadroom: Double
 }
@@ -44,6 +46,13 @@ final class DisplayRenderer {
 
     private var overlays: [CGDirectDisplayID: ScreenOverlays] = [:]
     private lazy var metal = MetalContext()
+    private let gamma = GammaBoostSession()
+    private var hdrTrigger: BoostOverlay?
+    private var hdrTriggerDisplay: CGDirectDisplayID?
+
+    init() {
+        gamma.onStatusChanged = { [weak self] in self?.onBoostStateChanged?() }
+    }
 
     func apply(_ settings: DisplayRenderSettings) -> DisplayRenderReport {
         let displays = NSScreen.screens(in: settings.scope)
@@ -51,6 +60,13 @@ final class DisplayRenderer {
         let dim = settings.dim.clamped(to: 0...0.95)
         let ring = settings.ring.clamped(to: 0...1)
         let edrDisplays = displays.map(\.screen).filter { $0.maximumPotentialExtendedDynamicRangeColorComponentValue > 1 }
+        let gammaDisplay = boost > 0 && settings.region == .full
+            ? displays.first {
+                CGDisplayIsBuiltin($0.id) != 0 && $0.screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1
+            }
+            : nil
+        let gammaStatus = gammaDisplay.map { updateGamma(on: $0, strength: boost) }
+        if gammaDisplay == nil { stopGamma() }
         var targetBoostDisplayCount = 0
 
         if boost > 0 || dim > 0 || ring > 0 {
@@ -67,7 +83,7 @@ final class DisplayRenderer {
                 let current = Double(screen.maximumExtendedDynamicRangeColorComponentValue)
                 // Present an HDR frame to activate EDR before current headroom has risen above 1.
                 let available = current > 1.001 ? min(current, potential) : potential
-                let gain = 1 + max(0, min(available, 3) - 1) * boost
+                let gain = id == gammaDisplay?.id ? 1 : 1 + max(0, min(available, 3) - 1) * boost
                 let frame = boostFrame(on: screen, region: settings.region, frontWindow: frontWindow)
                 let wantsBoost = gain > 1 && !frame.isEmpty
                 if wantsBoost { targetBoostDisplayCount += 1 }
@@ -83,25 +99,72 @@ final class DisplayRenderer {
                 )
             }
         } else {
-            clear()
+            clearOverlays()
         }
 
         return DisplayRenderReport(
             displayCount: displays.count,
             edrDisplayCount: edrDisplays.count,
-            targetBoostDisplayCount: targetBoostDisplayCount,
-            activeBoostDisplayCount: overlays.values.count { $0.boostState == .active },
-            hasPendingBoost: overlays.values.contains { $0.boostState == .pending },
+            targetBoostDisplayCount: targetBoostDisplayCount + (gammaDisplay == nil ? 0 : 1),
+            activeBoostDisplayCount: overlays.values.count { $0.boostState == .active } + (gammaStatus == .active ? 1 : 0),
+            hasPendingBoost: gammaStatus == .starting || overlays.values.contains { $0.boostState == .pending },
+            gammaStatus: gammaStatus,
+            gammaRestorationStatus: gamma.restorationStatus,
             currentHeadroom: edrDisplays.map { Double($0.maximumExtendedDynamicRangeColorComponentValue) }.max() ?? 1,
             potentialHeadroom: edrDisplays.map { Double($0.maximumPotentialExtendedDynamicRangeColorComponentValue) }.max() ?? 1
         )
     }
 
-    func clear() {
+    func clear(waitForGammaRestoration: Bool = false) {
+        stopGamma(waitForRestoration: waitForGammaRestoration)
+        clearOverlays()
+    }
+
+    private func clearOverlays() {
         for overlay in overlays.values {
             overlay.clear()
         }
         overlays.removeAll()
+    }
+
+    private func updateGamma(
+        on display: (id: CGDirectDisplayID, screen: NSScreen),
+        strength: Double
+    ) -> GammaBoostStatus {
+        if hdrTriggerDisplay != display.id {
+            removeHDRTrigger()
+        }
+        let status = gamma.update(
+            displayID: display.id,
+            strength: strength,
+            currentHeadroom: display.screen.maximumExtendedDynamicRangeColorComponentValue,
+            triggerReady: hdrTrigger?.state == .active
+        )
+        guard gamma.needsTrigger, let metal else {
+            if !gamma.isRestoring { removeHDRTrigger() }
+            return status
+        }
+        let visible = display.screen.visibleFrame
+        let frame = CGRect(x: visible.maxX - 9, y: visible.minY + 8, width: 1, height: 1)
+        let trigger = hdrTrigger ?? BoostOverlay(frame: frame, metal: metal, multiply: false) { [weak self] in
+            self?.onBoostStateChanged?()
+        }
+        hdrTrigger = trigger
+        hdrTriggerDisplay = display.id
+        trigger.window.show(in: frame)
+        trigger.setGain(1.5)
+        return status
+    }
+
+    private func stopGamma(waitForRestoration: Bool = false) {
+        gamma.stop(waitForRestoration: waitForRestoration)
+        if waitForRestoration || !gamma.isRestoring { removeHDRTrigger() }
+    }
+
+    private func removeHDRTrigger() {
+        hdrTrigger?.close()
+        hdrTrigger = nil
+        hdrTriggerDisplay = nil
     }
 
     private func boostFrame(on screen: NSScreen, region: BoostRegion, frontWindow: CGRect?) -> CGRect {
@@ -265,7 +328,12 @@ private final class BoostOverlay {
     private var failures = 0
     private var retryTask: Task<Void, Never>?
 
-    init(frame: CGRect, metal: MetalContext, onStateChanged: @escaping () -> Void) {
+    init(
+        frame: CGRect,
+        metal: MetalContext,
+        multiply: Bool = true,
+        onStateChanged: @escaping () -> Void
+    ) {
         self.onStateChanged = onStateChanged
         window = OverlayWindow(frame: frame, belowMenu: 3)
         let metalLayer = CAMetalLayer()
@@ -274,7 +342,7 @@ private final class BoostOverlay {
         metalLayer.colorspace = metal.colorSpace
         metalLayer.wantsExtendedDynamicRangeContent = true
         metalLayer.isOpaque = false
-        metalLayer.compositingFilter = "multiply"
+        if multiply { metalLayer.compositingFilter = "multiply" }
         metalLayer.allowsNextDrawableTimeout = true
         // A uniform color needs only one pixel. Core Animation scales it to the window.
         metalLayer.drawableSize = CGSize(width: 1, height: 1)

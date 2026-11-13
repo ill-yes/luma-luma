@@ -106,7 +106,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         shortcuts.stop()
         brightnessIndicator?.hide()
         renderer.onBoostStateChanged = nil
-        renderer.clear()
+        renderer.clear(waitForGammaRestoration: true)
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
@@ -314,20 +314,21 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func updateRefreshTimer() {
-        let followWindow = mode == .boost && preferences.region == .frontWindow
+        let refreshBoost = mode == .boost && preferences.boost > 0 &&
+            (preferences.region == .frontWindow || (preferences.region == .full && preferences.scope != .external))
         let pollPower = powerSource == nil && preferences.powerRule != .manual
-        guard !paused, followWindow || pollPower else {
+        guard !paused, refreshBoost || pollPower else {
             tick?.invalidate()
             tick = nil
             return
         }
-        let interval = followWindow ? 0.25 : 5.0
+        let interval = refreshBoost ? 0.25 : 5.0
         guard tick?.timeInterval != interval else { return }
         tick?.invalidate()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 if pollPower { self?.refreshAutomation() }
-                if followWindow { self?.refreshDisplays() }
+                if refreshBoost { self?.refreshDisplays() }
             }
         }
         timer.tolerance = interval * 0.1
@@ -479,7 +480,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         paused = shouldPause
         updateRefreshTimer()
         if paused {
-            renderer.clear()
+            renderer.clear(waitForGammaRestoration: true)
             brightnessIndicator?.hide()
         } else {
             refreshAutomation()
