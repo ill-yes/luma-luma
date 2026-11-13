@@ -221,6 +221,8 @@ struct PreferencesView: View {
                 .tag(SettingsTab.diagnostics)
         }
         .frame(width: 500, height: 420)
+        // The native tab strip extends above the TabView's content bounds.
+        .padding(.top, 12)
         .padding(.bottom, 8)
         .onChange(of: controller.profileDisplays) {
             if editedDisplayID == nil { profileDisplayID.wrappedValue = nil }
