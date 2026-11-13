@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct StatusView: View {
@@ -58,22 +59,14 @@ struct StatusView: View {
         return report.hasPendingBoost
     }
 
-    private var effectSymbol: String {
-        if controller.hasActiveEffect { return controller.selectedEffect.symbol }
-        switch controller.selectedEffect {
-        case .boost: return "sun.max"
-        case .eclipse: return "moon"
-        case .ring: return "circle.circle"
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: effectSymbol)
-                    .font(.system(size: 21, weight: .medium))
-                    .foregroundStyle(controller.hasActiveEffect ? Color.accentColor : .secondary)
-                    .frame(width: 30)
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 32, height: 32)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Luma Luma")

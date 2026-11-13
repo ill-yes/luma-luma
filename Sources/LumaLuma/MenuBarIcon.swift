@@ -14,27 +14,28 @@ enum MenuBarIcon {
             NSColor.black.set()
 
             let sun = NSBezierPath()
-            sun.appendArc(withCenter: NSPoint(x: 9, y: 6.25), radius: 4, startAngle: 0, endAngle: 180)
+            sun.appendArc(withCenter: NSPoint(x: 9, y: 8.5), radius: 5.6, startAngle: 0, endAngle: 180)
+            sun.close()
             if active {
-                sun.close()
                 sun.fill()
             }
             sun.lineWidth = 1.4
-            sun.lineCapStyle = .round
+            sun.lineJoinStyle = .round
             sun.stroke()
 
-            let raysAndHorizon = NSBezierPath()
-            raysAndHorizon.lineWidth = 1.4
-            raysAndHorizon.lineCapStyle = .round
-            raysAndHorizon.move(to: NSPoint(x: 2, y: 3.75))
-            raysAndHorizon.line(to: NSPoint(x: 16, y: 3.75))
-            raysAndHorizon.move(to: NSPoint(x: 9, y: 12.75))
-            raysAndHorizon.line(to: NSPoint(x: 9, y: 15.25))
-            raysAndHorizon.move(to: NSPoint(x: 4.4, y: 10.85))
-            raysAndHorizon.line(to: NSPoint(x: 2.65, y: 12.6))
-            raysAndHorizon.move(to: NSPoint(x: 13.6, y: 10.85))
-            raysAndHorizon.line(to: NSPoint(x: 15.35, y: 12.6))
-            raysAndHorizon.stroke()
+            let horizon = NSBezierPath(
+                roundedRect: NSRect(x: 2, y: 5.5, width: 14, height: 1.4),
+                xRadius: 0.7, yRadius: 0.7
+            )
+            horizon.fill()
+
+            let lowerHorizon = NSBezierPath()
+            lowerHorizon.appendArc(withCenter: NSPoint(x: 4.7, y: 3.7), radius: 0.7,
+                                   startAngle: 90, endAngle: 270)
+            lowerHorizon.line(to: NSPoint(x: 12.3, y: 3))
+            lowerHorizon.line(to: NSPoint(x: 13.7, y: 4.4))
+            lowerHorizon.close()
+            lowerHorizon.fill()
             return true
         }
         image.isTemplate = true
