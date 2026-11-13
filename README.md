@@ -1,14 +1,43 @@
+<p align="center">
+  <img src="docs/assets/luma-luma.png" width="112" height="112" alt="Luma Luma app icon" />
+</p>
+
 # Luma Luma
 
-Luma Luma is an MIT-licensed macOS menu bar app for HDR brightness, extra dimming and a screen-edge fill light. It provides local controls for selected built-in and external displays.
+A native macOS menu bar app for HDR brightness, extra dimming and screen-edge lighting.
+Choose an effect, adjust its strength and turn it on when you need it.
 
-## Requirements
+**macOS 14+** · **Swift 6+** · **MIT License**
+
+[✨ Features](#-features) · [🚀 Quick start](#-quick-start) · [🎛️ User guide](docs/USAGE.md) · [🛠️ Development](docs/DEVELOPMENT.md) · [🤝 Contributing](CONTRIBUTING.md)
+
+## ✨ Features
+
+| | Feature | What it does |
+| --- | --- | --- |
+| ☀️ | **HDR Boost** | Uses available HDR headroom to brighten compatible displays. |
+| 🌓 | **Flexible coverage** | Apply Boost to the entire display, its right half or the frontmost window. |
+| 🌙 | **Eclipse** | Adds dimming below the display's normal brightness setting. |
+| 💡 | **Ring Light** | Adds a screen-edge fill light with adjustable strength, width and warmth. |
+| ⌨️ | **Brightness keys** | Continue from maximum macOS brightness into HDR Boost. Hold a key to repeat or use Shift–Option for fine steps. |
+| 🖥️ | **Display groups** | Target all displays, the built-in display or external displays. Optionally synchronize supported Apple backlights. |
+| 🔋 | **Power automation** | Turn Boost on when using a power adapter or when the battery is above a chosen level. |
+| 🎚️ | **Menu bar controls** | Select and configure an effect while it is off, then enable it with one switch. |
+| ⚡ | **Shortcuts** | Assign global keyboard shortcuts and use `lumaluma://` commands from macOS Shortcuts. |
+
+Available Boost depends on the display, preset and HDR headroom reported by macOS.
+The slider sets the requested effect strength. Luma Luma shows when HDR is
+preparing, active or unavailable. [Display compatibility and limits](docs/USAGE.md#-display-compatibility)
+
+## 🚀 Quick start
+
+### Requirements
 
 - macOS 14 or newer.
-- Xcode or the Xcode Command Line Tools with Swift 6.0 or newer to build from source.
-- An HDR-capable display for Boost. Available brightness depends on the display and the headroom macOS exposes.
+- Swift 6.0 or newer, provided by Xcode or the Xcode Command Line Tools.
+- An HDR-capable display for Boost. Eclipse and Ring Light can be used on SDR displays.
 
-## Build and run
+### Build and launch
 
 From the repository directory, run
 
@@ -17,43 +46,49 @@ From the repository directory, run
 open 'dist/Luma Luma.app'
 ```
 
-The script creates a release build for the current Mac's architecture and signs the app locally with an ad-hoc signature. Move `Luma Luma.app` to Applications before enabling **Open at login**.
+The script creates a release app for the current Mac's architecture and signs it
+locally with an ad-hoc signature. Move the app to **Applications** before enabling
+**Open at login**. [Build details](docs/DEVELOPMENT.md#-build-and-packaging)
 
-Click the sunrise icon in the menu bar to choose an effect, adjust its strength, open **Settings…** or quit. The switch turns the selected effect on or off. You can select and configure effects while the switch is off. Changing effects while it is on applies the new selection. The sun has a filled center while an effect is active. Right-click the icon to toggle the selected effect. Reopening the app from Finder opens its controls.
+### Use an effect
 
-## Controls
+1. Click the sunrise icon in the menu bar.
+2. Select **Boost**, **Eclipse** or **Ring Light** and adjust the controls.
+3. Turn on the switch to apply the selected effect.
 
-| Control | Behavior |
+Changing the selected effect while the switch is on applies the new selection.
+Right-click the menu bar icon to toggle the selected effect. **Settings…** opens
+display, power and keyboard preferences.
+
+### Enable the MacBook brightness keys
+
+Open **Settings… → Shortcuts**, enable **Use display brightness keys** and grant
+Luma Luma the requested macOS access. At maximum native brightness, another
+**Brighter** press starts Boost. **Darker** steps back into normal macOS brightness.
+Use **Shift–Option** for finer adjustments. [Permission setup and key behavior](docs/USAGE.md#-macbook-brightness-keys)
+
+## 📚 Documentation
+
+| Guide | Contents |
 | --- | --- |
-| Boost | Uses HDR brightness on selected displays. Choose **Entire display**, **Half display (compare)** or **Front window**. |
-| Eclipse | Adds dimming below the display's normal brightness setting. |
-| Ring Light | Adds a screen-edge fill light with adjustable intensity, width and warmth. |
-| Display selection | Applies effects to all displays, the built-in display or external displays. |
-| Power automation | Enables Boost on external power or above a chosen battery level. |
-| Shortcuts | Assigns global toggle, increase and decrease keys, with an optional brightness indicator. |
+| [🎛️ User guide](docs/USAGE.md) | Effects, display compatibility, brightness keys, power rules, macOS Shortcuts and troubleshooting. |
+| [🛠️ Development](docs/DEVELOPMENT.md) | Toolchain, repository layout, rendering, helper lifecycle, tests and packaging. |
+| [🧪 Validation](docs/VALIDATION.md) | Automated coverage, observed MacBook results and hardware checks still to run. |
+| [🤝 Contributing](CONTRIBUTING.md) | Local checks, useful issue reports and contribution guidance. |
 
-For **Entire display** on a built-in XDR display, set macOS brightness to maximum and adjust the **Boost** slider. At full strength, Luma Luma requests an RGB transfer-curve gain of up to 1.45, limited by current HDR headroom. The slider represents effect strength. Display presets, power and temperature also affect the brightness macOS makes available.
+## 🛠️ Development
 
-**Preparing HDR…** appears while the display's HDR headroom stabilizes. Luma Luma then applies the requested strength automatically. A brief loss of headroom during active Boost starts recovery after the previous curve is restored. A timeout or display-curve error stays visible. Turn the switch off and on to start a fresh attempt.
+Run the automated checks with
 
-Close other display-curve utilities before using built-in full-display Boost. Luma Luma reports a conflict if another process changes its curve. Turning the effect off, sleeping, locking or quitting starts restoration of the saved baseline while Luma Luma retains ownership of the curve.
+```sh
+./scripts/test-hdr.sh
+```
 
-## MacBook brightness keys
+The macOS CI workflow runs the same checks and builds the app. Local build outputs
+and temporary test data belong in the ignored `.build/` and `dist/` directories.
+[Developer guide](docs/DEVELOPMENT.md)
 
-In **Settings… → Shortcuts**, enable **Use display brightness keys**. Grant Luma Luma access in **System Settings → Privacy & Security → Accessibility**, then toggle the option off and on.
+## 📄 License
 
-On German-language macOS 27, this permission pane is named **Gerätesteuerung und Datenzugriff**. If a replaced local build still reports missing access while its switch is on, quit Luma Luma, remove its entry from that pane, add the current app bundle again and relaunch it.
-
-At maximum macOS brightness, the next **Brighter** press starts HDR Boost on a supported selected display, including from **Off**. Further presses increase the effect. **Darker** reduces Boost and returns to macOS brightness after the baseline curve has been restored. Holding either key repeats the adjustment. Hold **Shift–Option** for finer steps.
-
-The keyboard level lasts for the current session. A manual Boost start uses the saved slider setting. **Settings… → Displays → Sync hardware brightness** optionally synchronizes supported Apple backlights while using brightness keys. It requires at least two selected displays with readable backlight levels and the same Accessibility access.
-
-## macOS Shortcuts
-
-Use the **Open URLs** action with `lumaluma://on`, `lumaluma://off` or `lumaluma://toggle` to control the app from a shortcut.
-
-## Development and license
-
-The developer guide covers the rendering paths, helper process, tests, packaging and hardware acceptance checks. [Development guide](docs/DEVELOPMENT.md)
-
-Luma Luma is distributed under the MIT License. The app bundle includes a copy in `Contents/Resources/LICENSE`. [License](LICENSE)
+Luma Luma is open source under the **MIT License**. A copy is included in every
+packaged app at `Contents/Resources/LICENSE`. [Read the license](LICENSE)
