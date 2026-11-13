@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/luma-luma.png" width="112" height="112" alt="Luma Luma app icon" />
+  <img src="docs/assets/luma-luma.png" width="112" height="112" alt="Luma Luma sunrise app icon" />
 </p>
 
 # Luma Luma

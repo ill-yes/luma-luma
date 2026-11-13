@@ -41,6 +41,16 @@ After replacing an ad-hoc build, macOS may require you to grant brightness-key a
 
 Generated products are stored in the ignored `.build` and `dist` directories. The bundled app contains the same MIT License as the source repository.
 
+### App icon
+
+The README and app icon share the source image at `docs/assets/luma-luma.png`. After updating it, regenerate the icon family and rebuild the app.
+
+```sh
+swift scripts/make-icon.swift dist/LumaLuma.iconset
+iconutil --convert icns dist/LumaLuma.iconset --output Packaging/LumaLuma.icns
+./scripts/build-app.sh
+```
+
 ## 🧩 Repository structure
 
 | Path or target | Purpose |
