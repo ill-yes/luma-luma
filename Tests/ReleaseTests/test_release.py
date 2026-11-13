@@ -49,6 +49,9 @@ class FakeGitHub:
         self.publish_failure = False
 
     def api(self, method, path, payload=None, allow_missing=False):
+        if path == "graphql":
+            candidate = {"databaseId": self.release["id"]} if self.release else None
+            return {"data": {"repository": {"release": candidate}}}
         if method != "GET":
             self.mutations.append((method, path, copy.deepcopy(payload)))
         if method == "GET" and "/releases/tags/" in path:
@@ -178,6 +181,56 @@ class ReleaseTests(unittest.TestCase):
         draft = self.draft()
         self.assertIsNone(self.github.api("GET", f"{self.github.prefix}/releases/tags/{self.context.tag}"))
         self.assertEqual(self.publisher._load_release()["id"], draft["id"])
+        self.assertEqual(self.github.mutations, [])
+
+    def test_draft_lookup_uses_graphql_when_rest_list_lags(self):
+        draft = self.draft()
+        self.github.releases = lambda: []
+        self.assertEqual(self.publisher._load_release()["id"], draft["id"])
+        self.assertEqual(self.github.mutations, [])
+
+    def test_new_draft_is_reloaded_by_id_when_rest_list_lags(self):
+        self.github.releases = lambda: []
+        self.publisher.publish(self.directory)
+        self.assertFalse(self.github.release["draft"])
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.github.mutations), 1)
+
+    def test_transient_id_404_is_retried_without_creating_another_draft(self):
+        original = self.github.api
+        remaining_failures = 2
+        def api(method, path, payload=None, allow_missing=False):
+            nonlocal remaining_failures
+            if method == "GET" and path == f"{self.github.prefix}/releases/1" and remaining_failures:
+                remaining_failures -= 1
+                return None
+            return original(method, path, payload, allow_missing)
+        self.github.api = api
+        with patch.object(release.time, "sleep"):
+            self.publisher.publish(self.directory)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.github.mutations), 1)
+        self.assertFalse(self.github.release["draft"])
+
+    def test_persistent_id_404_stops_without_creating_another_draft(self):
+        original = self.github.api
+        def api(method, path, payload=None, allow_missing=False):
+            if method == "GET" and path == f"{self.github.prefix}/releases/1":
+                return None
+            return original(method, path, payload, allow_missing)
+        self.github.api = api
+        with patch.object(release.time, "sleep"), self.assertRaisesRegex(release.ReleaseError, "known release"):
+            self.publisher.publish(self.directory)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.github.mutations), 1)
+        self.assertFalse(any(method == "UPLOAD" for method, _, _ in self.github.mutations))
+
+    def test_graphql_error_stops_before_release_creation(self):
+        original = self.github.api
+        def api(method, path, payload=None, allow_missing=False):
+            if path == "graphql":
+                return {"errors": [{"message": "Forbidden"}]}
+            return original(method, path, payload, allow_missing)
+        self.github.api = api
+        with self.assertRaisesRegex(release.ReleaseError, "metadata"):
+            self.publisher.publish(self.directory)
         self.assertEqual(self.github.mutations, [])
 
     def test_duplicate_drafts_for_version_are_rejected(self):

@@ -12,6 +12,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import time
 import zipfile
 
 
@@ -172,6 +173,7 @@ class ReleasePublisher:
         self.context = context
         self.github = github
         self.endpoint = github.prefix
+        self.release_id = None
 
     def _asset_map(self, release):
         assets = release.get("assets", [])
@@ -199,9 +201,21 @@ class ReleasePublisher:
             raise ReleaseError("The version tag does not reference a commit")
         return target.get("sha")
 
+    def _release_by_id(self, release_id):
+        for delay in (0, 1, 2, 4):
+            if delay:
+                time.sleep(delay)
+            result = self.github.api("GET", f"{self.endpoint}/releases/{release_id}", allow_missing=True)
+            if result is not None:
+                return result
+        raise ReleaseError("The known release could not be read after retrying")
+
     def _load_release(self, allow_hidden_release=False):
         context = self.context
-        release = self.github.api("GET", f"{self.endpoint}/releases/tags/{context.tag}", allow_missing=True)
+        if self.release_id is not None:
+            release = self._release_by_id(self.release_id)
+        else:
+            release = self.github.api("GET", f"{self.endpoint}/releases/tags/{context.tag}", allow_missing=True)
         if release is None:
             # The tag endpoint only finds published releases. Find pending drafts
             # through the release list, then fetch their current state by ID.
@@ -209,7 +223,21 @@ class ReleasePublisher:
             if len(matches) > 1:
                 raise ReleaseError("Multiple releases use the requested version tag")
             if matches:
-                release = self.github.api("GET", f"{self.endpoint}/releases/{matches[0]['id']}")
+                release = self._release_by_id(matches[0]["id"])
+            else:
+                # GitHub's CLI also uses GraphQL to find drafts whose tag has
+                # not been created yet. REST list results can lag behind writes.
+                owner, name = context.repository.split("/")
+                result = self.github.api("POST", "graphql", {
+                    "query": "query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { databaseId } } }",
+                    "variables": {"owner": owner, "name": name, "tag": context.tag},
+                })
+                repository = result.get("data", {}).get("repository")
+                if repository is None:
+                    raise ReleaseError("Could not inspect repository release metadata")
+                candidate = repository.get("release")
+                if candidate is not None:
+                    release = self._release_by_id(candidate["databaseId"])
         tag_commit = self._tag_commit()
         if release is None:
             if tag_commit is not None:
@@ -235,6 +263,7 @@ class ReleasePublisher:
         if not release.get("draft") and tag_commit is None:
             raise ReleaseError("The published release tag is missing")
         self._asset_map(release)
+        self.release_id = release["id"]
         return release
 
     def _verify_remote(self, release, expected=None):
@@ -307,6 +336,7 @@ class ReleasePublisher:
                 "name": f"Luma Luma {self.context.version}", "body": self._notes(),
                 "draft": True, "prerelease": False,
             })
+            self.release_id = release["id"]
         for name, path in paths.items():
             release = self._load_release()
             if release is None or not release["draft"]:
