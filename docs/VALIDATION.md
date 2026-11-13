@@ -28,6 +28,8 @@ These tests use controlled helper and display fixtures. The full script, local r
 
 The local validation environment used macOS 27.2.1, Swift 6.4.2 and an Apple silicon MacBook with its built-in display.
 
+The observations in this section were recorded before the app's bundle identity changed to `dev.illyes.lumaluma`.
+
 | Check | Observed result |
 | --- | --- |
 | Select effects while disabled | Selection and controls changed while the effect stayed off. |
@@ -41,7 +43,7 @@ The local validation environment used macOS 27.2.1, Swift 6.4.2 and an Apple sil
 
 ## ⌨️ Physical MacBook keys
 
-The physical brightness keys were tested on November 13, 2026, with macOS Accessibility permission enabled for the current app bundle.
+The physical brightness keys were tested on November 13, 2026, before the bundle identity changed, with macOS Accessibility permission enabled for that build.
 
 | Check | Observed result |
 | --- | --- |
@@ -53,10 +55,19 @@ The physical brightness keys were tested on November 13, 2026, with macOS Access
 | Individual boundary presses | Crossed back from Boost into native brightness. |
 | End of test | Native brightness returned to 1. All 1,024 samples in each RGB channel exactly matched the starting curve. |
 
-The current app bundle was re-added to the macOS privacy pane after an older permission entry failed to authorize it. On German-language macOS 27, this pane is **Datenschutz & Sicherheit → Gerätesteuerung und Datenzugriff**.
+The tested app bundle was re-added to the macOS privacy pane after an older permission entry failed to authorize it. On German-language macOS 27, this pane is **Datenschutz & Sicherheit → Gerätesteuerung und Datenzugriff**.
+
+## 🌅 Luma Luma identity checks
+
+After the identity change on November 13, 2026, all five automated suites passed. The release app and helper passed strict signature verification, the bundled license matched the repository copy, and the helper completed its shutdown protocol. Scans of all bundle files found no previous app names or local build paths. A secret scan of the rewritten Git history found no findings.
+
+The rebuilt app opened as **Luma Luma**. Its controls and settings showed the new name, the saved Boost level remained at 100%, and the brightness-key preference was preserved. Opening settings and returning to the controls kept the effect off.
+
+The new bundle identity requires its own macOS Accessibility grant. The app currently reports that this grant is missing. Physical brightness-key testing for `dev.illyes.lumaluma` is pending that grant.
 
 ## 🔎 Remaining coverage
 
+- Grant Accessibility access to the renamed app and repeat the physical brightness-key checks above.
 - The first hosted GitHub Actions run is pending publication and a workflow trigger. Local build and test results are available above.
 - Synchronized external displays and partial hardware synchronization still need device testing.
 - Restoration after sleep, session lock and quitting still needs explicit device testing.

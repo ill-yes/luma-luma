@@ -46,6 +46,8 @@ Built-in full-display Boost uses a different rendering path from external displa
 2. Grant Luma Luma access in **System Settings → Privacy & Security → Accessibility**. On German-language macOS 27, the pane is named **Gerätesteuerung und Datenzugriff**.
 3. Turn **Use display brightness keys** off and on to reconnect the event tap.
 
+When moving to the renamed app, grant access to **Luma Luma** again and update existing URL-based shortcuts to the `lumaluma://` scheme.
+
 At maximum native brightness, the next **Brighter** press starts HDR Boost on a supported selected display, including while Luma Luma is off. Further presses increase Boost. **Darker** reduces Boost and returns to native brightness after the baseline curve is restored. Holding either key repeats the adjustment.
 
 | Keys | Boost adjustment |
