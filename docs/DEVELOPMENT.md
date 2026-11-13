@@ -72,7 +72,7 @@ iconutil --convert icns dist/LumaLuma.iconset --output Packaging/LumaLuma.icns
 | `Sources/LumaLuma` | AppKit lifecycle, SwiftUI controls, preferences, shortcuts and display rendering. |
 | `Sources/LumaLumaGammaCore` | Display-curve representation, ownership, verification and restoration. |
 | `Sources/LumaLumaGammaHelper` | Separate process that owns a gamma session and handles release or disconnection. |
-| `Tests` | Standalone state, event-routing, helper-protocol and gamma-ownership tests. |
+| `Tests` | Standalone state, automation, event-routing, helper-protocol and gamma-ownership tests. |
 | `Packaging` | App property list and icon. |
 | `scripts` | Test runner, app builder and icon generator. |
 | `docs` | User guidance, development information and validation evidence. |
@@ -89,13 +89,29 @@ If an active session loses headroom, it restores the curve and waits for cleanup
 
 External, half-display and front-window Boost use Metal compositing overlays. Front-window placement reads WindowServer metadata. Eclipse and Ring Light use click-through windows.
 
+### Display profiles and brightness transitions
+
+The controller resolves the display group and individual participation before it builds a render target for each selected display. Optional profile fields override the global effect values. Preferences store profiles keyed by unique Core Graphics display UUID. A display without a unique UUID gets overrides for the current connection. Native brightness is read from the display on reconnect.
+
+The slider uses the Apple brightness adapter for native levels. Crossing into HDR writes native maximum when needed and reads it back before requesting Boost for the target. Returning to the native range removes that display's Boost. For the built-in RGB curve, an explicit restoration result controls the native write. The controller waits for a confirmed restore or a result indicating that no restoration is needed. Conflicts and unconfirmed restores cancel the write.
+
+The pending request tracks the latest slider value. The controller checks the selected display and its identity again before applying a deferred change. Target changes, display reconfiguration and pause events invalidate outstanding slider requests. Other monitors can keep rendering throughout a transition.
+
+The renderer reports each target's requested strength, confirmed RGB curve gain or presented Metal overlay gain, and current and potential EDR headroom. The Diagnostics tab shows these values and the render status. The clipboard report omits identifying display information and local paths.
+
 ## ⌨️ Brightness-key routing
 
 Native brightness keys are opt-in and use a Core Graphics event tap with macOS Accessibility permission. The selected built-in display is the reference when available. At confirmed maximum hardware brightness, **Brighter** starts Boost in steps of `1/16`, or `1/64` with **Shift–Option**. The keyboard strength is separate from the saved manual setting.
 
 On the return to zero, curve restoration starts before subsequent brightness-down events reach macOS. Token checks reject stale helper replies after a stopped or replaced session. Recovery also waits for an outstanding command callback, so a delayed conflict or error remains terminal.
 
-Backlight reads and optional synchronization dynamically load Apple's private DisplayServices framework. Availability depends on macOS and the display. Events pass to macOS when required hardware values or HDR support are unavailable. Synchronization writes the reference display first and records follower failures individually.
+Backlight reads and writes dynamically load Apple's private DisplayServices framework for the slider and optional key synchronization. Availability depends on macOS and the display. Events pass to macOS when required hardware values or HDR support are unavailable. Synchronization writes the reference display first and records follower failures individually.
+
+## 🌤️ Ambient Boost
+
+The sensor adapter uses IOKit registry reads to find the integrated light sensor and read its `CurrentLux` property. The service class and property keys are undocumented. A missing, ambiguous or invalid reading is reported as unavailable.
+
+The controller combines a participating, active built-in HDR display, a verified native level at maximum and the power rule into a single eligibility check. The policy processes lux readings on a two-second timer. It requires four seconds at or above the activation threshold and eight seconds at or below the deactivation threshold, with six seconds of tolerance for missing readings. Auto-Boost owns only the effect it started. Manual disable or dimming suppresses automatic activation until a confirmed dark period. Pause events release automatic Boost and clear the sample history before polling resumes.
 
 ## 🔄 Gamma ownership and restoration
 
@@ -107,7 +123,7 @@ Turning Boost off, sleeping, locking and quitting release the session. Pipe disc
 
 ## ✅ Tests and CI
 
-`./scripts/test-hdr.sh` compiles five standalone test executables with warnings treated as errors. It runs each suite and removes its temporary test directory. Review the suite coverage and measured hardware results. [Validation](VALIDATION.md)
+`./scripts/test-hdr.sh` compiles the standalone test executables with warnings treated as errors. It runs each suite and removes its temporary test directory. Review the suite coverage and measured hardware results. [Validation](VALIDATION.md)
 
 The **Build and test** GitHub Actions workflow runs the tests and release bundle build on `macos-15` for pushes to `main` and pull requests. It uses read-only repository access, compares the bundled license and verifies the app signature. The first hosted run passed at commit `b26d61d`. [CI result](https://github.com/ill-yes/luma-luma/actions/runs/43431125097)
 

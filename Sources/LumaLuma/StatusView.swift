@@ -5,21 +5,18 @@ struct StatusView: View {
     @ObservedObject var controller: AppController
     @ObservedObject var preferences: Preferences
 
-    private var percent: Int {
-        switch controller.selectedEffect {
-        case .boost: Int((controller.boostStrength * 100).rounded())
-        case .eclipse: Int((preferences.dim * 100).rounded())
-        case .ring: Int((preferences.ringStrength * 100).rounded())
-        }
-    }
-
     private var caption: String {
         if controller.paused { return "Paused while the display is inactive" }
         if controller.isRestoringCurve { return "Restoring display…" }
-        if controller.report?.gammaRestorationStatus == .restorationFailed {
+        switch controller.report?.gammaRestorationStatus {
+        case .restorationFailed:
             return "Could not restore the display curve"
+        case .conflict:
+            return "Display curve changed by another app"
+        default:
+            break
         }
-        if controller.mode != .off, controller.report?.displayCount == 0 {
+        if controller.controlDisplays.isEmpty {
             return "No displays match your selection"
         }
         switch controller.mode {
@@ -31,30 +28,38 @@ struct StatusView: View {
     }
 
     private var boostCaption: String {
-        guard controller.boostStrength > 0 else { return "Boost set to zero" }
         guard let report = controller.report else { return "Preparing HDR…" }
-        switch report.gammaStatus {
-        case .starting: return "Preparing HDR…"
-        case .unavailable: return "Built-in display HDR unavailable"
-        case .conflict: return "Display curve changed by another app"
-        case .failed: return "Could not apply the display curve"
-        case .restorationFailed: return "Could not restore the display curve"
-        case .active, nil: break
+        let requested = report.displays.values.filter { $0.requestedBoost > 0 }
+        guard !requested.isEmpty else {
+            return "Standard display brightness"
         }
-        if report.edrDisplayCount == 0 { return "No HDR display available" }
-        if report.targetBoostDisplayCount == 0 { return "Waiting for a frontmost window" }
-        if report.hasPendingBoost && report.activeBoostDisplayCount == 0 { return "Preparing HDR…" }
-        if report.activeBoostDisplayCount == 0 { return "HDR renderer unavailable" }
-        if report.currentHeadroom <= 1.01 { return "macOS is limiting HDR headroom" }
-        if report.activeBoostDisplayCount < report.targetBoostDisplayCount {
-            return "HDR boost on some selected displays"
+        if report.activeBoostDisplayCount > 0 {
+            if report.activeBoostDisplayCount < requested.count { return "HDR on some displays" }
+            if report.currentHeadroom <= 1.01 { return "macOS is limiting HDR headroom" }
+            return "HDR display brightness"
         }
-        return "HDR display brightness"
+        if report.hasPendingBoost { return "Preparing HDR…" }
+        if requested.contains(where: { $0.boostStatus == .conflict }) {
+            return "Display curve changed by another app"
+        }
+        if requested.contains(where: { $0.boostStatus == .restorationFailed }) {
+            return "Could not restore the display curve"
+        }
+        if requested.contains(where: { $0.boostStatus == .failed }) {
+            return "Could not apply the display curve"
+        }
+        if requested.contains(where: { $0.boostStatus == .waitingForWindow }) {
+            return "Waiting for a frontmost window"
+        }
+        if requested.allSatisfy({ $0.boostStatus == .unsupported }) {
+            return "No HDR display available"
+        }
+        return "HDR renderer unavailable"
     }
 
     private var isBusy: Bool {
         if controller.isRestoringCurve { return true }
-        guard !controller.paused, controller.mode == .boost, controller.boostStrength > 0 else { return false }
+        guard !controller.paused, controller.mode == .boost else { return false }
         guard let report = controller.report else { return true }
         return report.hasPendingBoost
     }
@@ -104,21 +109,16 @@ struct StatusView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
 
-            switch controller.selectedEffect {
-            case .boost:
-                slider("Boost", value: Binding(
-                    get: { controller.boostStrength },
-                    set: { controller.setManualBoost($0) }
-                ), range: 0...1)
-                Picker("Area", selection: $preferences.region) {
-                    ForEach(BoostRegion.allCases) { region in
-                        Text(region.title).tag(region)
+            if !controller.controlDisplays.isEmpty {
+                Picker("Display", selection: Binding(
+                    get: { controller.selectedDisplayID },
+                    set: { controller.selectDisplay($0) }
+                )) {
+                    ForEach(controller.controlDisplays) { display in
+                        Text(display.name).tag(Optional(display.id))
                     }
                 }
-            case .eclipse:
-                slider("Dimming", value: $preferences.dim, range: 0...0.95)
-            case .ring:
-                slider("Light intensity", value: $preferences.ringStrength, range: 0...1)
+                effectControls.id(controller.selectedDisplayID)
             }
 
             Divider()
@@ -127,6 +127,10 @@ struct StatusView: View {
                     controller.showPreferences()
                 }
                 .buttonStyle(.bordered)
+                Button("Diagnostics…", systemImage: "waveform.path") {
+                    controller.showDiagnostics()
+                }
+                .buttonStyle(.plain)
                 Spacer()
                 Button("Quit") { controller.quit() }
                     .buttonStyle(.plain)
@@ -143,12 +147,63 @@ struct StatusView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    @ViewBuilder
+    private var effectControls: some View {
+        switch controller.selectedEffect {
+        case .boost:
+            if let control = controller.brightnessControl {
+                let displayID = controller.selectedDisplayID
+                DisplayBrightnessSlider(control: control, value: Binding(
+                    get: { controller.brightnessControl?.value ?? control.value },
+                    set: {
+                        guard controller.selectedDisplayID == displayID,
+                              controller.brightnessControl?.mode == control.mode else { return }
+                        controller.setBrightnessControl($0)
+                    }
+                ), isHDRRangeAvailable: {
+                    controller.selectedDisplayID == displayID &&
+                        controller.brightnessControl?.showsHDRRange == true
+                })
+                if control.mode != .native {
+                    Picker("Area", selection: Binding(
+                        get: { controller.controlBoostRegion },
+                        set: { controller.setControlBoostRegion($0) }
+                    )) {
+                        ForEach(BoostRegion.allCases) { region in
+                            Text(region.title).tag(region)
+                        }
+                    }
+                }
+            } else {
+                Text("Brightness control is unavailable for this display")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let status = controller.brightnessControlStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .eclipse:
+            slider("Dimming", value: Binding(
+                get: { controller.controlDimming },
+                set: { controller.setControlDimming($0) }
+            ), range: 0...0.95)
+        case .ring:
+            slider("Light intensity", value: Binding(
+                get: { controller.controlRingStrength },
+                set: { controller.setControlRingStrength($0) }
+            ), range: 0...1)
+        }
+    }
+
     private func slider(
         _ label: String,
         value: Binding<Double>,
         range: ClosedRange<Double>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let percent = Int((value.wrappedValue * 100).rounded())
+        return VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(label)
                 Spacer()
@@ -170,14 +225,8 @@ struct PreferencesHost: View {
     var body: some View {
         VStack(spacing: 0) {
             PreferencesView(
-                preferences: controller.preferences,
-                boost: Binding(
-                    get: { controller.boostStrength },
-                    set: { controller.setManualBoost($0) }
-                ),
-                loginEnabled: controller.loginEnabled,
-                setLoginEnabled: controller.setLoginEnabled,
-                shortcutError: controller.shortcutError
+                controller: controller,
+                preferences: controller.preferences
             )
             if let loginMessage = controller.loginMessage {
                 Text(loginMessage)

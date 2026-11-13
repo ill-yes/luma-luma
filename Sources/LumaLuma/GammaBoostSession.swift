@@ -57,9 +57,15 @@ final class GammaBoostSession {
         var isOngoing: Bool { status == .starting || status == .active }
     }
 
+    private struct Cleanup {
+        let token = UUID()
+        var displayID: CGDirectDisplayID?
+        var completions: [(GammaEndResult) -> Void] = []
+    }
+
     var onStatusChanged: (() -> Void)?
-    private(set) var restorationStatus: GammaBoostStatus?
-    var isRestoring: Bool { cleanupToken != nil }
+    var restorationStatus: GammaBoostStatus? { recoveryError?.status }
+    var isRestoring: Bool { cleanup != nil }
 
     var needsTrigger: Bool {
         guard let attempt else { return false }
@@ -68,7 +74,9 @@ final class GammaBoostSession {
 
     private let transport: GammaHelperTransport
     private var attempt: Attempt?
-    private var cleanupToken: UUID?
+    private var cleanup: Cleanup?
+    private var restorationResults: [CGDirectDisplayID: GammaEndResult] = [:]
+    private var recoveryError: (displayID: CGDirectDisplayID, status: GammaBoostStatus)?
     private var restartAfterRestoration = false
 
     init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/LumaLumaGammaHelper")) {
@@ -89,9 +97,9 @@ final class GammaBoostSession {
         if restartAfterRestoration {
             guard !isRestoring, attempt?.inFlight != true else { return .starting }
             restartAfterRestoration = false
-            if let restorationStatus {
-                attempt?.status = restorationStatus
-                return restorationStatus
+            if let recoveryError, recoveryError.displayID == displayID {
+                attempt?.status = recoveryError.status
+                return recoveryError.status
             }
             attempt = Attempt(displayID: displayID)
             begin()
@@ -142,8 +150,48 @@ final class GammaBoostSession {
         if waitForRestoration { transport.waitForQueuedWork() }
     }
 
+    func appliedGain(on displayID: CGDirectDisplayID) -> Double? {
+        guard attempt?.displayID == displayID, attempt?.status == .active else { return nil }
+        return attempt?.appliedGain
+    }
+
+    func isRestoring(on displayID: CGDirectDisplayID) -> Bool {
+        cleanup?.displayID == displayID
+    }
+
+    func restorationFailure(on displayID: CGDirectDisplayID) -> GammaBoostStatus? {
+        restorationResults[displayID]?.failureStatus
+    }
+
+    func restore(on displayID: CGDirectDisplayID, completion: @escaping (GammaEndResult) -> Void) {
+        if attempt?.displayID == displayID { stop() }
+        if isRestoring(on: displayID) {
+            cleanup?.completions.append(completion)
+        } else {
+            completion(restorationResults[displayID] ?? .notNeeded)
+        }
+    }
+
+    func forgetDisplay(_ displayID: CGDirectDisplayID) {
+        if attempt?.displayID == displayID { stop() }
+        if isRestoring(on: displayID) { cleanup?.displayID = nil }
+        restorationResults.removeValue(forKey: displayID)
+        if recoveryError?.displayID == displayID { recoveryError = nil }
+    }
+
+    func reassociateDisplay(from oldID: CGDirectDisplayID, to newID: CGDirectDisplayID) {
+        guard oldID != newID else { return }
+        forgetDisplay(newID)
+        if attempt?.displayID == oldID { stop() }
+        if isRestoring(on: oldID) { cleanup?.displayID = newID }
+        restorationResults[newID] = restorationResults.removeValue(forKey: oldID)
+        if let error = recoveryError, error.displayID == oldID {
+            recoveryError = (newID, error.status)
+        }
+    }
+
     private func begin() {
-        guard let current = attempt else { return }
+        guard let current = attempt, !isRestoring else { return }
         attempt?.inFlight = true
         attempt?.lastCommand = .now
         transport.begin(displayID: current.displayID) { [weak self] result in
@@ -156,9 +204,8 @@ final class GammaBoostSession {
                     return
                 case .acquired:
                     attempt?.acquired = true
-                    // Transport cannot acquire until the previous helper exits.
-                    cleanupToken = nil
-                    restorationStatus = nil
+                    restorationResults.removeValue(forKey: current.displayID)
+                    if recoveryError?.displayID == current.displayID { recoveryError = nil }
                 case .rejected(let status):
                     finish(status, release: false)
                 }
@@ -183,10 +230,9 @@ final class GammaBoostSession {
                 } else if recovering {
                     onStatusChanged?()
                 } else if let gain {
-                    let wasActive = attempt?.status == .active
                     attempt?.appliedGain = gain
                     attempt?.status = .active
-                    if !wasActive { onStatusChanged?() }
+                    onStatusChanged?()
                 }
             }
         }
@@ -199,18 +245,27 @@ final class GammaBoostSession {
     }
 
     private func release() {
-        let token = UUID()
-        cleanupToken = token
+        guard let displayID = attempt?.displayID, cleanup == nil else { return }
+        let retirement = Cleanup(displayID: displayID)
+        cleanup = retirement
+        let token = retirement.token
         transport.end { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self, cleanupToken == token else { return }
-                cleanupToken = nil
-                switch result {
-                case .notNeeded: break
-                case .restored: restorationStatus = nil
-                case .conflict: restorationStatus = .conflict
-                case .failed: restorationStatus = .restorationFailed
+                guard let self, let finished = cleanup, finished.token == token else { return }
+                cleanup = nil
+                var confirmed = result.confirmed
+                if let id = finished.displayID {
+                    if let failure = result.recovery.failureStatus {
+                        recoveryError = (id, failure)
+                    } else if result.recovery != .notNeeded, recoveryError?.displayID == id {
+                        recoveryError = nil
+                    }
+                    if confirmed == .notNeeded, let prior = restorationResults[id] {
+                        confirmed = prior
+                    }
+                    restorationResults[id] = confirmed
                 }
+                finished.completions.forEach { $0(confirmed) }
                 onStatusChanged?()
             }
         }
@@ -240,11 +295,29 @@ private enum GammaBeginResult {
     case rejected(GammaBoostStatus)
 }
 
-private enum GammaEndResult {
+enum GammaEndResult: Equatable {
     case notNeeded
     case restored
     case conflict
     case failed
+
+    fileprivate var failureStatus: GammaBoostStatus? {
+        switch self {
+        case .restored, .notNeeded: nil
+        case .conflict: .conflict
+        case .failed: .restorationFailed
+        }
+    }
+}
+
+private struct GammaRetirementResult {
+    let recovery: GammaEndResult
+    let confirmed: GammaEndResult
+
+    init(_ recovery: GammaEndResult, confirmed: GammaEndResult? = nil) {
+        self.recovery = recovery
+        self.confirmed = confirmed ?? recovery
+    }
 }
 
 // All Process and pipe I/O stays on this queue. A closed input also requests
@@ -253,7 +326,8 @@ private final class GammaHelperTransport: @unchecked Sendable {
     private struct Retirement {
         let process: Process
         let reply: GammaHelperReply?
-        var completions: [@Sendable (GammaEndResult) -> Void] = []
+        var ownershipConflict = false
+        var completions: [@Sendable (GammaRetirementResult) -> Void] = []
     }
 
     private let queue = DispatchQueue(label: "dev.illyes.lumaluma.gamma", qos: .userInitiated)
@@ -299,13 +373,13 @@ private final class GammaHelperTransport: @unchecked Sendable {
         queue.async { completion(self.connection?.request(command) ?? .error) }
     }
 
-    func end(completion: @escaping @Sendable (GammaEndResult) -> Void) {
+    func end(completion: @escaping @Sendable (GammaRetirementResult) -> Void) {
         queue.async {
             guard let connection = self.connection else {
                 if self.retiring?.reply != nil {
                     self.retiring?.completions.append(completion)
                 } else {
-                    completion(.notNeeded)
+                    completion(GammaRetirementResult(.notNeeded))
                 }
                 return
             }
@@ -313,7 +387,9 @@ private final class GammaHelperTransport: @unchecked Sendable {
             let reply = connection.request("end")
             connection.close()
             let process = connection.process
-            self.retiring = Retirement(process: process, reply: reply, completions: [completion])
+            self.retiring = Retirement(
+                process: process, reply: reply, ownershipConflict: connection.ownershipConflict, completions: [completion]
+            )
             self.finishRetirement(of: process)
         }
     }
@@ -321,12 +397,19 @@ private final class GammaHelperTransport: @unchecked Sendable {
     private func finishRetirement(of process: Process) {
         guard let retirement = retiring, retirement.process === process, !process.isRunning else { return }
         retiring = nil
-        let result: GammaEndResult
+        let result: GammaRetirementResult
         switch retirement.reply {
-        case nil: result = .notNeeded
-        case .ok: result = .restored
-        case .conflict: result = .conflict
-        default: result = process.terminationStatus == 0 ? .restored : .failed
+        case nil:
+            result = GammaRetirementResult(.notNeeded)
+        case .ok:
+            result = GammaRetirementResult(.restored, confirmed: retirement.ownershipConflict ? .conflict : .restored)
+        case .conflict:
+            result = GammaRetirementResult(.conflict)
+        default:
+            // A clean exit after EOF can also mean that the helper lost ownership.
+            // Keep existing HDR recovery behavior, but require proof for SDR writes.
+            let recovery: GammaEndResult = process.terminationStatus == 0 ? .restored : .failed
+            result = GammaRetirementResult(recovery, confirmed: retirement.ownershipConflict ? .conflict : .failed)
         }
         retirement.completions.forEach { $0(result) }
     }
@@ -339,6 +422,7 @@ private final class GammaHelperTransport: @unchecked Sendable {
 
     private final class Connection {
         let process = Process()
+        private(set) var ownershipConflict = false
         private let input: FileHandle
         private let output: FileHandle
         private var usable = true
@@ -373,6 +457,7 @@ private final class GammaHelperTransport: @unchecked Sendable {
                 close()
                 return .error
             }
+            if reply == .conflict { ownershipConflict = true }
             return reply
         }
 

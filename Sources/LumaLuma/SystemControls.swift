@@ -1,4 +1,5 @@
 import AppKit
+import ColorSync
 import Darwin
 import IOKit.ps
 
@@ -41,6 +42,10 @@ final class AppleBrightness {
         return Double(value)
     }
 
+    func supportsBrightnessControl(on display: CGDirectDisplayID) -> Bool {
+        write != nil && brightness(of: display) != nil
+    }
+
     func setBrightness(
         _ brightness: Double,
         reference: CGDirectDisplayID,
@@ -70,20 +75,33 @@ private final class DisplayServicesLibrary {
     }
 }
 
-extension NSScreen {
-    private var lumaLumaDisplayID: CGDirectDisplayID? {
-        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+struct ConnectedDisplay {
+    let id: CGDirectDisplayID
+    let screen: NSScreen
+    let identity: UUID?
+
+    var builtIn: Bool { CGDisplayIsBuiltin(id) != 0 }
+    var supportsHDR: Bool { screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1 }
+    var choice: DisplayControlChoice { .init(id: id, name: screen.localizedName) }
+
+    @MainActor
+    static func current() -> [Self] {
+        let displays: [Self] = NSScreen.screens.compactMap { screen in
+            let key = NSDeviceDescriptionKey("NSScreenNumber")
+            guard let id = (screen.deviceDescription[key] as? NSNumber)?.uint32Value else { return nil }
+            return Self(id: id, screen: screen, identity: identity(of: id))
+        }
+        let identityCounts = Dictionary(grouping: displays.compactMap(\.identity), by: { $0 })
+        return displays.map { display in
+            guard let identity = display.identity, identityCounts[identity]?.count == 1 else {
+                return Self(id: display.id, screen: display.screen, identity: nil)
+            }
+            return display
+        }
     }
 
-    static func screens(in scope: DisplayScope) -> [(id: CGDirectDisplayID, screen: NSScreen)] {
-        screens.compactMap { screen in
-            guard let id = screen.lumaLumaDisplayID else { return nil }
-            let builtIn = CGDisplayIsBuiltin(id) != 0
-            switch scope {
-            case .all: return (id, screen)
-            case .builtIn: return builtIn ? (id, screen) : nil
-            case .external: return builtIn ? nil : (id, screen)
-            }
-        }
+    private static func identity(of id: CGDirectDisplayID) -> UUID? {
+        guard let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return nil }
+        return UUID(uuidString: CFUUIDCreateString(nil, uuid) as String)
     }
 }

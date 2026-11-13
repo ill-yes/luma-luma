@@ -20,18 +20,19 @@ lighting are also included.
 | | Feature | What it does |
 | --- | --- | --- |
 | ☀️ | **HDR Boost** | Uses available HDR headroom to brighten compatible displays. |
+| 🎚️ | **Brightness slider** | Move from macOS brightness into HDR Boost on a supported display. |
 | 🌓 | **Flexible coverage** | Apply Boost to the entire display, its right half or the frontmost window. |
 | 🌙 | **Eclipse** | Adds dimming below the display's normal brightness setting. |
 | 💡 | **Ring Light** | Adds a screen-edge fill light with adjustable strength, width and warmth. |
 | ⌨️ | **Brightness keys** | Continue from maximum macOS brightness into HDR Boost. Hold a key to repeat or use Shift–Option for fine steps. |
-| 🖥️ | **Display groups** | Target all displays, the built-in display or external displays. Optionally synchronize supported Apple backlights. |
-| 🔋 | **Power automation** | Turn Boost on when using a power adapter or when the battery is above a chosen level. |
-| 🎚️ | **Menu bar controls** | Select and configure an effect while it is off, then enable it with one switch. |
+| 🖥️ | **Display profiles** | Choose a display group and customize effect values and participation for each monitor. |
+| 🌤️ | **Auto-Boost** | Use the built-in light sensor to add HDR Boost in bright surroundings at maximum macOS brightness. |
+| 🔋 | **Power automation** | Use the power adapter or a battery threshold to control automatic Boost. |
+| 🔍 | **Display diagnostics** | Inspect the requested Boost, applied gain and HDR headroom for each display. |
 | ⚡ | **Shortcuts** | Assign global keyboard shortcuts and use `lumaluma://` commands from macOS Shortcuts. |
 
 Available Boost depends on the display, preset and HDR headroom reported by macOS.
-The slider sets the requested effect strength. Luma Luma shows when HDR is
-preparing, active or unavailable. [Display compatibility and limits](docs/USAGE.md#-display-compatibility)
+Luma Luma shows when HDR is preparing, active or unavailable. [Display compatibility and limits](docs/USAGE.md#-display-compatibility)
 
 ## 🚀 Quick start
 
@@ -66,12 +67,15 @@ locally with an ad-hoc signature. Move the app to **Applications** before enabli
 ### Use an effect
 
 1. Click the sunrise icon in the menu bar.
-2. Select **Boost**, **Eclipse** or **Ring Light** and adjust the controls.
-3. Turn on the switch to apply the selected effect.
+2. Select **Boost**, **Eclipse** or **Ring Light**, then choose a display to adjust.
+3. Turn on the switch to apply the effect to the participating displays. In the
+   **Boost** tab, dragging past the **100%** macOS mark starts HDR Boost directly
+   on the chosen display.
 
 Changing the selected effect while the switch is on applies the new selection.
 Right-click the menu bar icon to toggle the selected effect. **Settings…** opens
-display, power and keyboard preferences.
+display, power and keyboard preferences. **Diagnostics…** opens per-display
+status and a copyable report. [Menu bar controls](docs/USAGE.md#-menu-bar-controls)
 
 ### Enable the MacBook brightness keys
 
@@ -84,7 +88,7 @@ Use **Shift–Option** for finer adjustments. [Permission setup and key behavior
 
 | Guide | Contents |
 | --- | --- |
-| [🎛️ User guide](docs/USAGE.md) | Effects, display compatibility, brightness keys, power rules, macOS Shortcuts and troubleshooting. |
+| [🎛️ User guide](docs/USAGE.md) | Brightness slider, display profiles, Auto-Boost, keyboard controls and diagnostics. |
 | [🛠️ Development](docs/DEVELOPMENT.md) | Toolchain, repository layout, rendering, helper lifecycle, tests and packaging. |
 | [🧪 Validation](docs/VALIDATION.md) | Automated coverage, observed MacBook results and hardware checks still to run. |
 | [🤝 Contributing](CONTRIBUTING.md) | Local checks, useful issue reports and contribution guidance. |

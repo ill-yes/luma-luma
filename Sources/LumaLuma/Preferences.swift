@@ -47,6 +47,19 @@ final class Preferences: ObservableObject {
     @Published var showDockIcon: Bool { didSet { defaults.set(showDockIcon, forKey: "showDockIcon") } }
     @Published var powerRule: PowerRule { didSet { defaults.set(powerRule.rawValue, forKey: "powerRule") } }
     @Published var batteryThreshold: Int { didSet { defaults.set(batteryThreshold, forKey: "batteryThreshold") } }
+    @Published var ambientBoostEnabled: Bool {
+        didSet { defaults.set(ambientBoostEnabled, forKey: "ambientBoostEnabled") }
+    }
+    @Published var ambientSensitivity: AmbientSensitivity {
+        didSet { defaults.set(ambientSensitivity.rawValue, forKey: "ambientSensitivity") }
+    }
+    @Published private(set) var displayProfiles: [UUID: DisplayProfile] {
+        didSet {
+            if let data = try? JSONEncoder().encode(displayProfiles) {
+                defaults.set(data, forKey: "displayProfiles")
+            }
+        }
+    }
     @Published var nativeBrightnessKeys: Bool {
         didSet { defaults.set(nativeBrightnessKeys, forKey: "nativeBrightnessKeys") }
     }
@@ -78,12 +91,23 @@ final class Preferences: ObservableObject {
         showDockIcon = defaults.bool(forKey: "showDockIcon")
         powerRule = defaults.string(forKey: "powerRule").flatMap(PowerRule.init(rawValue:)) ?? .manual
         batteryThreshold = min(100, max(1, defaults.object(forKey: "batteryThreshold") as? Int ?? 40))
+        ambientBoostEnabled = defaults.bool(forKey: "ambientBoostEnabled")
+        ambientSensitivity = defaults.string(forKey: "ambientSensitivity")
+            .flatMap(AmbientSensitivity.init(rawValue:)) ?? .standard
+        displayProfiles = defaults.data(forKey: "displayProfiles").flatMap {
+            try? JSONDecoder().decode([UUID: DisplayProfile].self, from: $0)
+        }?.mapValues(\.validated) ?? [:]
         nativeBrightnessKeys = defaults.bool(forKey: "nativeBrightnessKeys")
         showBrightnessIndicator = defaults.object(forKey: "showBrightnessIndicator") as? Bool ?? true
         syncHardwareBrightness = defaults.bool(forKey: "syncHardwareBrightness")
         shortcuts = defaults.data(forKey: "shortcuts").flatMap {
             try? JSONDecoder().decode([ShortcutAction: KeyBinding].self, from: $0)
         } ?? [:]
+    }
+
+    func setDisplayProfile(_ profile: DisplayProfile, for identity: UUID) {
+        let value: DisplayProfile? = profile == DisplayProfile() ? nil : profile
+        if displayProfiles[identity] != value { displayProfiles[identity] = value }
     }
 
     private static func readLevel(
@@ -94,116 +118,5 @@ final class Preferences: ObservableObject {
     ) -> Double {
         guard let level = defaults.object(forKey: key) as? Double, level.isFinite else { return fallback }
         return min(maximum, max(0, level))
-    }
-}
-
-struct PreferencesView: View {
-    @ObservedObject var preferences: Preferences
-    @Binding var boost: Double
-    let loginEnabled: Bool
-    let setLoginEnabled: @MainActor (Bool) -> Void
-    let shortcutError: String?
-
-    var body: some View {
-        TabView {
-            general.tabItem { Label("General", systemImage: "gearshape") }
-            displays.tabItem { Label("Displays", systemImage: "display") }
-            keyboard.tabItem { Label("Shortcuts", systemImage: "keyboard") }
-        }
-        .frame(width: 500, height: 420)
-        .padding(.bottom, 8)
-    }
-
-    private var general: some View {
-        Form {
-            Section("Startup") {
-                Toggle("Open at login", isOn: Binding(
-                    get: { loginEnabled },
-                    set: { setLoginEnabled($0) }
-                ))
-                Toggle("Turn on boost when Luma Luma opens", isOn: $preferences.startEnabled)
-                Toggle("Show icon in Dock", isOn: $preferences.showDockIcon)
-            }
-
-            Section("Power automation") {
-                Picker("Enable boost", selection: $preferences.powerRule) {
-                    ForEach(PowerRule.allCases, id: \.self) { rule in
-                        Text(rule.title).tag(rule)
-                    }
-                }
-                if preferences.powerRule == .batteryThreshold {
-                    Stepper(value: $preferences.batteryThreshold, in: 1...100) {
-                        Text("Minimum battery level: \(preferences.batteryThreshold)%")
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var displays: some View {
-        Form {
-            Section("Coverage") {
-                Picker("Displays", selection: $preferences.scope) {
-                    ForEach(DisplayScope.allCases) { scope in
-                        Text(scope.title).tag(scope)
-                    }
-                }
-                Picker("Boost area", selection: $preferences.region) {
-                    ForEach(BoostRegion.allCases) { region in
-                        Text(region.title).tag(region)
-                    }
-                }
-            }
-
-            Section("Effects") {
-                Slider(value: $boost, in: 0...1) { Text("Boost strength") }
-                Slider(value: $preferences.dim, in: 0...0.95) { Text("Eclipse dimming") }
-            }
-
-            Section("Ring Light") {
-                Slider(value: $preferences.ringStrength, in: 0...1) { Text("Strength") }
-                Slider(value: $preferences.ringWidth, in: 0...1) { Text("Width") }
-                Slider(value: $preferences.ringWarmth, in: 0...1) { Text("Warmth") }
-            }
-
-            Section {
-                Toggle("Sync hardware brightness", isOn: $preferences.syncHardwareBrightness)
-            } footer: {
-                Text("Applies when using brightness keys on supported Apple displays.")
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var keyboard: some View {
-        Form {
-            Section("Global shortcuts") {
-                ForEach(ShortcutAction.allCases, id: \.self) { action in
-                    LabeledContent(action.title) {
-                        ShortcutRecorder(binding: Binding(
-                            get: { preferences.shortcuts[action] },
-                            set: { preferences.shortcuts[action] = $0 }
-                        ))
-                    }
-                }
-            }
-
-            Section {
-                Toggle("Use display brightness keys", isOn: $preferences.nativeBrightnessKeys)
-                if let shortcutError {
-                    Label(shortcutError, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text("Keep pressing the brightness-up key at maximum brightness to start HDR on a supported display. Allow Luma Luma in System Settings › Privacy & Security › Accessibility, then turn this option off and back on.")
-            }
-
-            Section {
-                Toggle("Show brightness indicator", isOn: $preferences.showBrightnessIndicator)
-            }
-        }
-        .formStyle(.grouped)
     }
 }

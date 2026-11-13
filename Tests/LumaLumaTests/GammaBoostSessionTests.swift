@@ -11,6 +11,7 @@ struct GammaBoostSessionTests {
         print("HDR stability gate checks passed.")
         try await testBusyHelperCanBeRetried()
         try await testRejectedHelperDoesNotReportRestoreFailure()
+        try await testExplicitRestorationKeepsTheDisplayAndOutcome()
         try await testRestoreRemainsPendingUntilHelperExits()
         try await testPreparationAndInFlightChangesUseLatestStrength()
         try await testHeadroomRecoveryWaitsForRestoration()
@@ -111,6 +112,48 @@ struct GammaBoostSessionTests {
     }
 
     @MainActor
+    private static func testExplicitRestorationKeepsTheDisplayAndOutcome() async throws {
+        let outcomes: [(String, GammaEndResult)] = [("ok", .restored), ("conflict", .conflict), ("error", .failed)]
+        for (reply, expected) in outcomes {
+            let helper = try makeRecordingHelper(beforeReply: """
+            if [ "$command" = end ]; then
+                printf '\(reply)\\n'
+                sleep 0.25
+                exit 0
+            fi
+            """)
+            let directory = helper.deletingLastPathComponent()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let session = GammaBoostSession(helperURL: helper)
+            let beginDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !session.needsTrigger, ContinuousClock.now < beginDeadline {
+                _ = session.update(displayID: 42, strength: 1, currentHeadroom: 1.5, triggerReady: false)
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            precondition(session.needsTrigger)
+
+            session.stop()
+            session.reassociateDisplay(from: 42, to: 43)
+            var completions: [GammaEndResult] = []
+            session.restore(on: 42) { precondition($0 == .notNeeded) }
+            session.restore(on: 43) { completions.append($0) }
+            session.restore(on: 43) { completions.append($0) }
+            precondition(session.isRestoring(on: 43) && !session.isRestoring(on: 42))
+            precondition(completions.isEmpty)
+
+            let restoreDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while session.isRestoring, ContinuousClock.now < restoreDeadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            precondition(completions == [expected, expected])
+            session.restore(on: 43) { precondition($0 == expected) }
+            precondition(readCommands(in: directory) == ["begin 42", "end"])
+            session.forgetDisplay(43)
+            session.restore(on: 43) { precondition($0 == .notNeeded) }
+        }
+    }
+
+    @MainActor
     private static func testRestoreRemainsPendingUntilHelperExits() async throws {
         let helper = try makeHelper("""
         directory="$(dirname "$0")"
@@ -185,6 +228,10 @@ struct GammaBoostSessionTests {
         let directory = helper.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: directory) }
         let session = GammaBoostSession(helperURL: helper)
+        var confirmedGains: [Double] = []
+        session.onStatusChanged = { [weak session] in
+            if let gain = session?.appliedGain(on: 42) { confirmedGains.append(gain) }
+        }
         _ = session.update(displayID: 42, strength: 0.1, currentHeadroom: 1.5, triggerReady: true)
         try await Task.sleep(for: .milliseconds(100))
 
@@ -209,8 +256,13 @@ struct GammaBoostSessionTests {
             try await Task.sleep(for: .milliseconds(25))
         }
         precondition(readCommands(in: directory).contains("apply 1.45"))
-        try await waitUntilActive(session, strength: 1)
+        while confirmedGains.last != 1.45, ContinuousClock.now < latestApplyDeadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        precondition(confirmedGains == [1.18, 1.45])
+        precondition(session.appliedGain(on: 43) == nil)
         session.stop(waitForRestoration: true)
+        precondition(session.appliedGain(on: 42) == nil)
     }
 
     @MainActor
@@ -392,9 +444,12 @@ struct GammaBoostSessionTests {
         }
         precondition(FileManager.default.fileExists(atPath: directory.appendingPathComponent("reply-waiting").path))
         session.stop()
+        var explicitRestoration: GammaEndResult?
+        session.restore(on: 42) { explicitRestoration = $0 }
         _ = session.update(displayID: 43, strength: 0.25, currentHeadroom: 1.5, triggerReady: true)
         try Data().write(to: allowReply)
         try await waitUntilActive(session, displayID: 43, strength: 0.25)
+        precondition(explicitRestoration == .conflict)
         precondition(readCommands(in: directory).contains("begin 43"))
         session.stop(waitForRestoration: true)
         try FileManager.default.removeItem(at: directory)

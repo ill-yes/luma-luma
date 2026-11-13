@@ -12,14 +12,16 @@ Run the complete test script from the repository root.
 ./scripts/test-hdr.sh
 ```
 
-The script builds five standalone test executables with `-warnings-as-errors`.
+The script builds seven standalone test executables with `-warnings-as-errors`.
 
 | Suite | Coverage |
 | --- | --- |
 | `LightingStateTests` | Disabled effect selection, enabled effect changes, idempotent requests, temporary keyboard strength and rapid off/on transitions. |
-| `GammaBoostSessionTests` | HDR stability, helper protocol, busy retries, latest requested strength, recovery, delayed replies and terminal errors. |
+| `GammaBoostSessionTests` | HDR stability, helper protocol, busy retries, latest requested strength, recovery, delayed replies, explicit restoration outcomes and terminal errors. |
 | `BrightnessEventTests` | Native press/release routing, held-key handoff, replacement events and event-state reset. |
 | `BrightnessKeyRoutingTests` | SDR-to-HDR decisions, standard and fine steps, unavailable hardware values and partial brightness synchronization. |
+| `DisplayControlStateTests` | Slider boundaries, latest request during restoration, stale completions, monitor profile persistence and adding a second Boost target. |
+| `AmbientBoostTests` | Light thresholds, dwell times, invalid readings, power and brightness eligibility, pause and manual override. |
 | `GammaLeaseTests` | Curve ownership, verified writes, conflicts, full-resolution restoration and disconnect cleanup. |
 
 These tests use controlled helper and display fixtures. The full script, local release build, bundled-license comparison and strict app-signature verification passed for the validated local revision.
@@ -40,6 +42,18 @@ The observations in this section were recorded before the app's bundle identity 
 | Start with saved Boost at 100% | The built-in RGB curve reached a gain of 1.45 automatically. |
 | Disable Boost | All 1,024 samples per RGB channel exactly matched the initial curve. Native brightness was preserved. |
 | Controlled busy and missing helpers | Separate test bundles displayed preparation, timeout and helper-error states. |
+
+### Combined brightness and per-display controls
+
+On an Apple silicon MacBook Pro with macOS 27.2.1, a local preview with isolated preferences was used to inspect the shared controls and settings in light and dark appearances. The per-display editor showed the built-in display's saved Boost override and its inherited values. The Diagnostics tab showed native brightness, requested Boost, confirmed gain and current and potential HDR headroom.
+
+Moving the slider from 50% macOS brightness into the HDR range started Boost from Off. Native brightness reached 100%. At 77% requested Boost, all three RGB channel maxima were approximately `1.34728265`, matching the factor shown in Diagnostics. Returning to the SDR range restored the original 50% native brightness and all 1,024 samples in each RGB channel.
+
+The updated slider was checked in light and dark appearances. At 50% native brightness, the HDR area was hidden and clicking its reserved space left brightness at 50%. A single drag crossed the fixed 100% mark and requested 69% Boost. Native brightness read back as 100%, and all three RGB channel maxima reached approximately `1.30854774`. Dragging back to about 50% restored all 1,024 samples per channel and hid the HDR area. The focused Right Arrow action advanced from native maximum to 1% Boost. The accessibility decrement action returned the slider to native maximum.
+
+The final Universal bundle passed strict signature verification. Both executables contain `arm64` and `x86_64` slices with a macOS 14 minimum. The bundled license and icon matched the repository copies.
+
+Auto-Boost read the integrated light sensor and showed its monitoring state at 100% native brightness. At 74 lx, it left the original RGB curve in place. In a follow-up test with the sensor illuminated, standard sensitivity started the saved 65% Boost and the red channel maximum reached `1.29250002`. After roughly 10 seconds of sampled light at or below 2,000 lx, the effect ended and the complete baseline RGB curve was restored. Native brightness stayed at 100% throughout the automatic transition. The preview was closed after returning the display to its original 50%.
 
 ## ⌨️ Physical MacBook keys
 
@@ -81,6 +95,8 @@ Re-running all jobs of that workflow succeeded and recognized the published rele
 
 - Record the complete physical brightness-key sequence, including fine-step measurements, with the current bundle identity.
 - Synchronized external displays and partial hardware synchronization still need device testing.
+- Monitor-profile reassociation, multiple independent HDR targets and external HDR overlays need a connected-display test.
+- Auto-Boost needs a sleep/wake test on real hardware.
 - Restoration after sleep, session lock and quitting still needs explicit device testing.
 - Menu bar appearance should be checked in both light and dark appearances.
 

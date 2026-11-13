@@ -2,30 +2,54 @@ import AppKit
 import Metal
 import QuartzCore
 
-enum DisplayScope: String, CaseIterable, Identifiable, Sendable {
-    case all
-    case builtIn
-    case external
-
-    var id: Self { self }
-}
-
-enum BoostRegion: String, CaseIterable, Identifiable, Sendable {
-    case full
-    case split
-    case frontWindow
-
-    var id: Self { self }
-}
-
-struct DisplayRenderSettings {
+struct DisplayRenderTarget {
+    let id: CGDirectDisplayID
+    let screen: NSScreen
     let boost: Double
     let dim: Double
-    let scope: DisplayScope
     let region: BoostRegion
     let ring: Double
-    var ringWidth: Double = 0.45
-    var ringWarmth: Double = 0.25
+    let ringWidth: Double
+    let ringWarmth: Double
+}
+
+enum DisplayBoostPath: Equatable {
+    case gamma
+    case overlay
+}
+
+enum DisplayBoostStatus: Equatable {
+    case off
+    case preparing
+    case active
+    case restoring
+    case unsupported
+    case waitingForWindow
+    case unavailable
+    case conflict
+    case failed
+    case restorationFailed
+
+    init(gammaStatus: GammaBoostStatus) {
+        switch gammaStatus {
+        case .starting: self = .preparing
+        case .active: self = .active
+        case .unavailable: self = .unavailable
+        case .conflict: self = .conflict
+        case .failed: self = .failed
+        case .restorationFailed: self = .restorationFailed
+        }
+    }
+}
+
+struct DisplayRenderResult: Equatable {
+    let requestedBoost: Double
+    let appliedGain: Double?
+    let boostPath: DisplayBoostPath?
+    let boostStatus: DisplayBoostStatus
+    let currentHeadroom: Double
+    let potentialHeadroom: Double
+    let hasActiveEffect: Bool
 }
 
 struct DisplayRenderReport: Equatable {
@@ -39,6 +63,7 @@ struct DisplayRenderReport: Equatable {
     let isRestoringCurve: Bool
     let currentHeadroom: Double
     let potentialHeadroom: Double
+    let displays: [CGDirectDisplayID: DisplayRenderResult]
 }
 
 @MainActor
@@ -50,13 +75,48 @@ final class DisplayRenderer {
     private let gamma = GammaBoostSession()
     private var hdrTrigger: BoostOverlay?
     private var hdrTriggerDisplay: CGDirectDisplayID?
-    private var lastGammaStatus: GammaBoostStatus?
+    private var lastGamma: (displayID: CGDirectDisplayID, status: GammaBoostStatus)?
 
     init() {
-        gamma.onStatusChanged = { [weak self] in self?.onBoostStateChanged?() }
+        gamma.onStatusChanged = { [weak self] in
+            guard let self else { return }
+            if !gamma.isRestoring && !gamma.needsTrigger { removeHDRTrigger() }
+            onBoostStateChanged?()
+        }
     }
 
     var isRestoringCurve: Bool { gamma.isRestoring }
+
+    func isRestoringCurve(on displayID: CGDirectDisplayID) -> Bool {
+        gamma.isRestoring(on: displayID)
+    }
+
+    func restoreBrightness(on displayID: CGDirectDisplayID, completion: @escaping (GammaEndResult) -> Void) {
+        overlays[displayID]?.removeBoost()
+        if lastGamma?.displayID == displayID { lastGamma = nil }
+        gamma.restore(on: displayID) { [weak self] result in
+            if let self, hdrTriggerDisplay == displayID, !gamma.needsTrigger { removeHDRTrigger() }
+            completion(result)
+        }
+    }
+
+    func forgetDisplay(_ id: CGDirectDisplayID) {
+        clearDisplay(id)
+        gamma.forgetDisplay(id)
+    }
+
+    func reassociateDisplay(from oldID: CGDirectDisplayID, to newID: CGDirectDisplayID) {
+        guard oldID != newID else { return }
+        clearDisplay(oldID)
+        clearDisplay(newID)
+        gamma.reassociateDisplay(from: oldID, to: newID)
+    }
+
+    private func clearDisplay(_ id: CGDirectDisplayID) {
+        overlays.removeValue(forKey: id)?.clear()
+        if lastGamma?.displayID == id { lastGamma = nil }
+        if hdrTriggerDisplay == id { removeHDRTrigger() }
+    }
 
     func keyBoostState(
         displayID: CGDirectDisplayID,
@@ -73,8 +133,9 @@ final class DisplayRenderer {
         }
         guard requested else { return .ready }
         if region == .full, CGDisplayIsBuiltin(displayID) != 0 {
-            return keyState(for: lastGammaStatus)
+            return keyState(for: lastGamma?.displayID == displayID ? lastGamma?.status : nil)
         }
+        guard gamma.restorationFailure(on: displayID) == nil else { return .unavailable }
         switch overlays[displayID]?.boostState {
         case .active: return .active
         case .pending, nil: return .starting
@@ -90,71 +151,114 @@ final class DisplayRenderer {
         }
     }
 
-    func apply(_ settings: DisplayRenderSettings) -> DisplayRenderReport {
-        let displays = NSScreen.screens(in: settings.scope)
-        let boost = settings.boost.clamped(to: 0...1)
-        let dim = settings.dim.clamped(to: 0...0.95)
-        let ring = settings.ring.clamped(to: 0...1)
-        let edrDisplays = displays.map(\.screen).filter { $0.maximumPotentialExtendedDynamicRangeColorComponentValue > 1 }
-        let gammaDisplay = boost > 0 && settings.region == .full
-            ? displays.first {
-                CGDisplayIsBuiltin($0.id) != 0 && $0.screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1
-            }
-            : nil
-        let gammaStatus = gammaDisplay.map { updateGamma(on: $0, strength: boost) }
-        lastGammaStatus = gammaStatus
-        if gammaDisplay == nil { stopGamma() }
+    func apply(_ targets: [DisplayRenderTarget]) -> DisplayRenderReport {
+        let gammaTarget = targets.first {
+            $0.boost.clamped(to: 0...1) > 0 && $0.region == .full && CGDisplayIsBuiltin($0.id) != 0
+                && $0.screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1
+        }
+        lastGamma = nil
+        if let gammaTarget, metal != nil {
+            lastGamma = (gammaTarget.id, updateGamma(on: gammaTarget))
+        } else {
+            stopGamma()
+        }
+        let selected = Set(targets.map(\.id))
+        for id in overlays.keys.filter({ !selected.contains($0) }) {
+            overlays.removeValue(forKey: id)?.clear()
+        }
+
+        let needsFrontWindow = targets.contains { $0.boost > 0 && $0.region == .frontWindow }
+        let frontWindow = needsFrontWindow ? frontWindowFrame() : nil
+        var results: [CGDirectDisplayID: DisplayRenderResult] = [:]
         var targetBoostDisplayCount = 0
-
-        if boost > 0 || dim > 0 || ring > 0 {
-            let selected = Set(displays.map(\.id))
-            for id in overlays.keys.filter({ !selected.contains($0) }) {
-                overlays.removeValue(forKey: id)?.clear()
-            }
-
-            let frontWindow = boost > 0 && settings.region == .frontWindow ? frontWindowFrame() : nil
-            for (id, screen) in displays {
+        for target in targets {
+            let id = target.id
+            let screen = target.screen
+            let boost = target.boost.clamped(to: 0...1)
+            let dim = target.dim.clamped(to: 0...0.95)
+            let ring = target.ring.clamped(to: 0...1)
+            let potential = max(1, Double(screen.maximumPotentialExtendedDynamicRangeColorComponentValue))
+            let current = max(1, Double(screen.maximumExtendedDynamicRangeColorComponentValue))
+            let frame = boost > 0 ? boostFrame(on: screen, region: target.region, frontWindow: frontWindow) : .zero
+            let wantsBoost = boost > 0 && potential > 1 && !frame.isEmpty
+            if wantsBoost { targetBoostDisplayCount += 1 }
+            let restoring = gamma.isRestoring(on: id)
+            let usesGamma = gammaTarget?.id == id
+            let overlayAllowed = wantsBoost && !usesGamma && !restoring && gamma.restorationFailure(on: id) == nil
+            let overlayMetal = overlayAllowed ? metal : nil
+            if overlayMetal != nil || dim > 0 || ring > 0 {
                 let overlay = overlays[id] ?? ScreenOverlays()
                 overlays[id] = overlay
-                let potential = Double(screen.maximumPotentialExtendedDynamicRangeColorComponentValue)
-                let current = Double(screen.maximumExtendedDynamicRangeColorComponentValue)
                 // Present an HDR frame to activate EDR before current headroom has risen above 1.
                 let available = current > 1.001 ? min(current, potential) : potential
-                let gain = id == gammaDisplay?.id ? 1 : 1 + max(0, min(available, 3) - 1) * boost
-                let frame = boostFrame(on: screen, region: settings.region, frontWindow: frontWindow)
-                let wantsBoost = gain > 1 && !frame.isEmpty
-                if wantsBoost { targetBoostDisplayCount += 1 }
-                overlay.setBoost(gain, frame: frame, metal: wantsBoost ? metal : nil) { [weak self] in
+                let gain = 1 + (min(available, 3) - 1) * boost
+                overlay.setBoost(gain, frame: frame, metal: overlayMetal) { [weak self] in
                     self?.onBoostStateChanged?()
                 }
                 overlay.setDimming(dim, frame: screen.frame)
                 overlay.setRing(
                     ring,
-                    width: settings.ringWidth.clamped(to: 0...1),
-                    warmth: settings.ringWarmth.clamped(to: 0...1),
+                    width: target.ringWidth.clamped(to: 0...1),
+                    warmth: target.ringWarmth.clamped(to: 0...1),
                     frame: screen.visibleFrame
                 )
+            } else {
+                overlays.removeValue(forKey: id)?.clear()
             }
-        } else {
-            clearOverlays()
+
+            let path: DisplayBoostPath? = wantsBoost ? (usesGamma ? .gamma : .overlay) : nil
+            let appliedGain = usesGamma ? gamma.appliedGain(on: id) : overlays[id]?.appliedBoostGain
+            let status = boostStatus(on: id, strength: boost, potential: potential, frame: frame, path: path)
+            results[id] = DisplayRenderResult(
+                requestedBoost: boost, appliedGain: appliedGain,
+                boostPath: restoring ? .gamma : path, boostStatus: status,
+                currentHeadroom: current, potentialHeadroom: potential,
+                hasActiveEffect: appliedGain != nil || dim > 0 || (ring > 0 && !screen.visibleFrame.isEmpty)
+            )
         }
 
+        let edrDisplays = results.values.filter { $0.potentialHeadroom > 1 }
         return DisplayRenderReport(
-            displayCount: displays.count,
+            displayCount: targets.count,
             edrDisplayCount: edrDisplays.count,
-            targetBoostDisplayCount: targetBoostDisplayCount + (gammaDisplay == nil ? 0 : 1),
-            activeBoostDisplayCount: overlays.values.count { $0.boostState == .active } + (gammaStatus == .active ? 1 : 0),
-            hasPendingBoost: gammaStatus == .starting || overlays.values.contains { $0.boostState == .pending },
-            gammaStatus: gammaStatus,
+            targetBoostDisplayCount: targetBoostDisplayCount,
+            activeBoostDisplayCount: results.values.count { $0.appliedGain != nil },
+            hasPendingBoost: results.values.contains { $0.boostStatus == .preparing },
+            gammaStatus: lastGamma?.status,
             gammaRestorationStatus: gamma.restorationStatus,
             isRestoringCurve: gamma.isRestoring,
-            currentHeadroom: edrDisplays.map { Double($0.maximumExtendedDynamicRangeColorComponentValue) }.max() ?? 1,
-            potentialHeadroom: edrDisplays.map { Double($0.maximumPotentialExtendedDynamicRangeColorComponentValue) }.max() ?? 1
+            currentHeadroom: edrDisplays.map(\.currentHeadroom).max() ?? 1,
+            potentialHeadroom: edrDisplays.map(\.potentialHeadroom).max() ?? 1,
+            displays: results
         )
     }
 
+    private func boostStatus(
+        on id: CGDirectDisplayID,
+        strength: Double,
+        potential: Double,
+        frame: CGRect,
+        path: DisplayBoostPath?
+    ) -> DisplayBoostStatus {
+        if gamma.isRestoring(on: id) { return .restoring }
+        if path == .gamma, let lastGamma, lastGamma.displayID == id {
+            return DisplayBoostStatus(gammaStatus: lastGamma.status)
+        }
+        if let failure = gamma.restorationFailure(on: id) {
+            return DisplayBoostStatus(gammaStatus: failure)
+        }
+        guard strength > 0 else { return .off }
+        guard potential > 1 else { return .unsupported }
+        guard !frame.isEmpty else { return .waitingForWindow }
+        switch overlays[id]?.boostState {
+        case .pending: return .preparing
+        case .active: return .active
+        case .unavailable, nil: return .unavailable
+        }
+    }
+
     func clear(waitForGammaRestoration: Bool = false) {
-        lastGammaStatus = nil
+        lastGamma = nil
         stopGamma(waitForRestoration: waitForGammaRestoration)
         clearOverlays()
     }
@@ -166,23 +270,19 @@ final class DisplayRenderer {
         overlays.removeAll()
     }
 
-    private func updateGamma(
-        on display: (id: CGDirectDisplayID, screen: NSScreen),
-        strength: Double
-    ) -> GammaBoostStatus {
-        if hdrTriggerDisplay != display.id {
-            removeHDRTrigger()
-        }
+    private func updateGamma(on display: DisplayRenderTarget) -> GammaBoostStatus {
         let status = gamma.update(
             displayID: display.id,
-            strength: strength,
+            strength: display.boost,
             currentHeadroom: display.screen.maximumExtendedDynamicRangeColorComponentValue,
-            triggerReady: hdrTrigger?.state == .active
+            triggerReady: hdrTriggerDisplay == display.id && hdrTrigger?.state == .active
         )
+        if gamma.isRestoring { return status }
         guard gamma.needsTrigger, let metal else {
-            if !gamma.isRestoring { removeHDRTrigger() }
+            removeHDRTrigger()
             return status
         }
+        if hdrTriggerDisplay != display.id { removeHDRTrigger() }
         let visible = display.screen.visibleFrame
         let frame = CGRect(x: visible.maxX - 9, y: visible.minY + 8, width: 1, height: 1)
         let trigger = hdrTrigger ?? BoostOverlay(frame: frame, metal: metal, multiply: false) { [weak self] in
@@ -254,17 +354,22 @@ private final class ScreenOverlays {
     private var ring: RingOverlay?
 
     var boostState: BoostOverlay.State? { boost?.state }
+    var appliedBoostGain: Double? { boost?.appliedGain }
 
     func setBoost(_ gain: Double, frame: CGRect, metal: MetalContext?, onStateChanged: @escaping () -> Void) {
         guard let metal else {
-            boost?.close()
-            boost = nil
+            removeBoost()
             return
         }
         let overlay = boost ?? BoostOverlay(frame: frame, metal: metal, onStateChanged: onStateChanged)
         boost = overlay
         overlay.window.show(in: frame)
         overlay.setGain(gain)
+    }
+
+    func removeBoost() {
+        boost?.close()
+        boost = nil
     }
 
     func setDimming(_ opacity: Double, frame: CGRect) {
@@ -295,7 +400,7 @@ private final class ScreenOverlays {
     }
 
     func clear() {
-        boost?.close()
+        removeBoost()
         dim?.orderOut(nil)
         ring?.window.orderOut(nil)
     }
@@ -360,9 +465,11 @@ private final class BoostOverlay {
 
     let window: OverlayWindow
     private(set) var state = State.pending
+    private(set) var appliedGain: Double?
     private let frames: BoostFrameRenderer
     private let onStateChanged: () -> Void
     private var requestedGain: Double?
+    private var presentation: UUID?
     private var rendering = false
     private var failures = 0
     private var retryTask: Task<Void, Never>?
@@ -400,13 +507,17 @@ private final class BoostOverlay {
 
     func close() {
         requestedGain = nil
+        presentation = nil
+        appliedGain = nil
         retryTask?.cancel()
         retryTask = nil
         window.orderOut(nil)
     }
 
     private func draw() {
-        guard let gain = requestedGain, window.isVisible, !rendering, retryTask == nil else { return }
+        guard let gain = requestedGain, window.isVisible, !rendering, presentation == nil, retryTask == nil else {
+            return
+        }
         rendering = true
         frames.render(gain: gain) { [weak self] frame in
             Task { @MainActor [weak self] in
@@ -418,20 +529,36 @@ private final class BoostOverlay {
     private func renderCompleted(_ frame: RenderedBoostFrame?, gain: Double) {
         rendering = false
         guard let requestedGain, window.isVisible else { return }
-        guard let frame else {
-            scheduleRetry()
-            return
-        }
-        failures = 0
         guard gain == requestedGain else {
             draw()
             return
         }
-        frame.present()
-        if state != .active {
-            state = .active
-            onStateChanged()
+        guard let frame else {
+            scheduleRetry()
+            return
         }
+        let token = UUID()
+        presentation = token
+        frame.present { [weak self] didPresent in
+            Task { @MainActor [weak self] in
+                self?.presentationCompleted(token, gain: gain, didPresent: didPresent)
+            }
+        }
+    }
+
+    private func presentationCompleted(_ token: UUID, gain: Double, didPresent: Bool) {
+        guard presentation == token, let requestedGain, window.isVisible else { return }
+        presentation = nil
+        guard didPresent else {
+            if gain == requestedGain { scheduleRetry() } else { draw() }
+            return
+        }
+        failures = 0
+        let changed = state != .active || appliedGain != gain
+        state = .active
+        appliedGain = gain
+        if changed { onStateChanged() }
+        if gain != requestedGain { draw() }
     }
 
     private func scheduleRetry() {
@@ -443,7 +570,7 @@ private final class BoostOverlay {
             retryTask = nil
             draw()
         }
-        if failures >= 3, state != .unavailable {
+        if failures >= 3, appliedGain == nil, state != .unavailable {
             state = .unavailable
             onStateChanged()
         }
@@ -496,7 +623,8 @@ private struct RenderedBoostFrame: @unchecked Sendable {
     let drawable: any CAMetalDrawable
 
     @MainActor
-    func present() {
+    func present(completion: @escaping @Sendable (Bool) -> Void) {
+        drawable.addPresentedHandler { completion($0.presentedTime > 0) }
         drawable.present()
     }
 }

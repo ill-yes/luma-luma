@@ -27,6 +27,16 @@ swiftc -parse-as-library -warnings-as-errors \
 "$test_dir/brightness-routing"
 
 swiftc -parse-as-library -warnings-as-errors \
+    Sources/LumaLuma/DisplayControlState.swift Tests/LumaLumaTests/DisplayControlStateTests.swift \
+    -o "$test_dir/display-control"
+"$test_dir/display-control"
+
+swiftc -parse-as-library -warnings-as-errors \
+    Sources/LumaLuma/AmbientBoost.swift Tests/LumaLumaTests/AmbientBoostTests.swift \
+    -o "$test_dir/ambient-boost"
+"$test_dir/ambient-boost"
+
+swiftc -parse-as-library -warnings-as-errors \
     Sources/LumaLumaGammaCore/*.swift Tests/LumaLumaGammaCoreTests/*.swift \
     -o "$test_dir/gamma-restoration"
 "$test_dir/gamma-restoration"
