@@ -69,12 +69,13 @@ The new bundle identity requires its own macOS Accessibility grant. The app curr
 
 The first **Build and test** GitHub Actions run passed at commit `b26d61d`. It ran the existing tests, built the release app and verified its signature and bundled license. [CI result](https://github.com/ill-yes/luma-luma/actions/runs/43431125097)
 
-The manual **Release LumaLuma** workflow adds Universal packaging and release-publication checks. Its first end-to-end release and published-download verification are pending. The release tests cover version selection, re-runs, draft recovery, conflicts, incomplete uploads and publication failures.
+The manual **Release LumaLuma** workflow published **0.1.2** from commit `164d6ba`. The run passed all 39 release-publication tests and the existing display suites. The downloaded ZIP passed its SHA-256 check, and the extracted app and helper both contained `arm64` and `x86_64` code with a macOS 14 minimum. Their signatures, version fields, license, icon and private-path scans passed. [Release](https://github.com/ill-yes/luma-luma/releases/tag/v0.1.2) · [Workflow run](https://github.com/ill-yes/luma-luma/actions/runs/43434486527)
+
+Re-running all jobs of that workflow succeeded and recognized the published release. The release ID and both asset IDs, sizes, hashes and timestamps were preserved. The release tests also cover draft recovery, conflicts, incomplete uploads and publication failures.
 
 ## 🔎 Remaining coverage
 
 - Grant Accessibility access to the renamed app and repeat the physical brightness-key checks above.
-- Complete the first manual release, verify its downloaded Universal app and confirm a re-run recognizes the published release.
 - Synchronized external displays and partial hardware synchronization still need device testing.
 - Restoration after sleep, session lock and quitting still needs explicit device testing.
 - Menu bar appearance should be checked in both light and dark appearances.
