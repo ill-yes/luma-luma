@@ -63,7 +63,11 @@ After the identity change on November 13, 2026, all five automated suites passed
 
 The rebuilt app opened as **Luma Luma**. Its controls and settings showed the new name, the saved Boost level remained at 100%, and the brightness-key preference was preserved. Opening settings and returning to the controls kept the effect off.
 
-The new bundle identity requires its own macOS Accessibility grant. The app currently reports that this grant is missing. Physical brightness-key testing for `dev.illyes.lumaluma` is pending that grant.
+### Installed version 0.1.2
+
+The installed `/Applications/Luma Luma.app` received macOS Accessibility permission for the `dev.illyes.lumaluma` identity. Manual Boost at 100% reached an RGB gain of `1.4500000476837158`. Turning Boost off restored all 1,024 samples per RGB channel exactly to the baseline.
+
+The user confirmed brightness-key operation with this installed app. The exact fine-step sequence was not fully captured. The detailed physical-key measurements above remain evidence from the earlier bundle identity.
 
 ## 📦 Hosted CI and releases
 
@@ -75,7 +79,7 @@ Re-running all jobs of that workflow succeeded and recognized the published rele
 
 ## 🔎 Remaining coverage
 
-- Grant Accessibility access to the renamed app and repeat the physical brightness-key checks above.
+- Record the complete physical brightness-key sequence, including fine-step measurements, with the current bundle identity.
 - Synchronized external displays and partial hardware synchronization still need device testing.
 - Restoration after sleep, session lock and quitting still needs explicit device testing.
 - Menu bar appearance should be checked in both light and dark appearances.

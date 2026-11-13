@@ -45,8 +45,7 @@ preparing, active or unavailable. [Display compatibility and limits](docs/USAGE.
 
 Download the latest `LumaLuma-<version>-macos-universal.zip` and its `.sha256`
 file from the release page. The Universal app supports Apple Silicon and Intel
-Macs. Access currently requires a GitHub account with permission to the private
-repository. [Download Luma Luma](https://github.com/ill-yes/luma-luma/releases/latest)
+Macs. [Download Luma Luma](https://github.com/ill-yes/luma-luma/releases/latest)
 
 Expand the ZIP, move **Luma Luma.app** to **Applications** and open it. Releases use
 ad-hoc signing. macOS may require explicit approval on first launch. [Installation and updates](docs/USAGE.md#-installation-and-updates)

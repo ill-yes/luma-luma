@@ -1,5 +1,5 @@
 name: Release LumaLuma
-run-name: Release LumaLuma 0.1.${{ github.run_number }}
+run-name: "Release LumaLuma #${{ github.run_number }}"
 
 on:
   workflow_dispatch:

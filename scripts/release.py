@@ -23,7 +23,11 @@ class ReleaseError(Exception):
 def version_for_run(run_number):
     if not re.fullmatch(r"[1-9][0-9]*", str(run_number)):
         raise ReleaseError("The workflow run number must be a positive integer")
-    return f"0.1.{run_number}"
+    number = int(run_number)
+    # The first two workflow runs preceded the stable release series.
+    if number < 3:
+        return f"0.1.{number}"
+    return f"1.0.{number - 3}"
 
 
 @dataclass(frozen=True)
@@ -295,6 +299,9 @@ class ReleasePublisher:
         marker = json.dumps(context.marker, sort_keys=True, separators=(",", ":"))
         return (
             f"## Luma Luma {context.version}\n\n"
+            "Make your compatible MacBook display brighter, even when macOS brightness "
+            "is already at 100%. Luma Luma uses available HDR headroom and supports "
+            "the MacBook brightness keys.\n\n"
             "Download the universal ZIP for macOS 14 or newer. It contains the app and "
             "display helper for Apple silicon and Intel Macs.\n\n"
             "Extract the ZIP, move **Luma Luma.app** to **Applications**, and open it. "

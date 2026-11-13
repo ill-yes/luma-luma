@@ -100,7 +100,7 @@ class FakeGitHub:
 
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
-        self.context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", "1")
+        self.context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", "3")
         self.github = FakeGitHub(self.context)
         self.publisher = release.ReleasePublisher(self.context, self.github)
         self.temporary = tempfile.TemporaryDirectory()
@@ -132,8 +132,10 @@ class ReleaseTests(unittest.TestCase):
         return result
 
     def test_run_numbers_form_patch_versions(self):
-        self.assertEqual(release.version_for_run("1"), "0.1.1")
-        self.assertEqual(release.version_for_run("27"), "0.1.27")
+        versions = (("1", "0.1.1"), ("2", "0.1.2"), ("3", "1.0.0"), ("4", "1.0.1"), ("27", "1.0.24"))
+        for number, version in versions:
+            with self.subTest(number=number):
+                self.assertEqual(release.version_for_run(number), version)
         for number in ("0", "01", "-1", "1.0", "x", "1\n"):
             with self.subTest(number=number), self.assertRaises(release.ReleaseError):
                 release.version_for_run(number)
@@ -155,7 +157,7 @@ class ReleaseTests(unittest.TestCase):
         path = self.directory / "output"
         with patch.dict(os.environ, {"GITHUB_OUTPUT": str(path)}):
             self.publisher.prepare()
-        self.assertEqual(path.read_text(), "version=0.1.1\nbuild_number=1\npublished=false\nrelease_url=\n")
+        self.assertEqual(path.read_text(), "version=1.0.0\nbuild_number=3\npublished=false\nrelease_url=\n")
 
     def test_first_publication_creates_complete_release(self):
         self.assertEqual(self.publisher.publish(self.directory), self.context.url)
@@ -169,6 +171,26 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(self.publisher.prepare())
         self.assertEqual(self.publisher.publish(self.directory / "missing"), self.context.url)
         self.assertEqual(self.github.mutations, [])
+
+    def test_legacy_published_reruns_keep_their_release_identity(self):
+        for number, version in (("1", "0.1.1"), ("2", "0.1.2")):
+            with self.subTest(number=number):
+                context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", number)
+                github = FakeGitHub(context)
+                publisher = release.ReleasePublisher(context, github)
+                github.release = {
+                    "id": 1, "tag_name": f"v{version}", "target_commitish": context.commit,
+                    "body": publisher._notes(), "draft": False, "prerelease": False, "assets": [],
+                }
+                github.tag_commit = context.commit
+                archive = archive_bytes(context)
+                checksum = f"{hashlib.sha256(archive).hexdigest()}  {context.archive_name}\n".encode()
+                github.add_asset(context.archive_name, archive)
+                github.add_asset(context.asset_names[1], checksum)
+                self.assertTrue(publisher.prepare())
+                self.assertEqual(publisher.publish(self.directory / "missing"), context.url)
+                self.assertEqual(context.version, version)
+                self.assertEqual(github.mutations, [])
 
     def test_own_draft_is_resumed(self):
         self.draft()
@@ -392,9 +414,20 @@ class ReleaseTests(unittest.TestCase):
             release.verify_archive(self.context, data, checksum)
 
     def test_newer_published_version_remains_latest(self):
-        self.github.other_releases = [{"tag_name": "v0.1.2", "draft": False, "prerelease": False}]
+        self.github.other_releases = [{"tag_name": "v1.0.1", "draft": False, "prerelease": False}]
         self.publisher.publish(self.directory)
         self.assertEqual(self.github.release["make_latest"], "false")
+
+    def test_stable_release_becomes_latest_after_development_series(self):
+        self.github.other_releases = [{"tag_name": "v0.1.99", "draft": False, "prerelease": False}]
+        self.publisher.publish(self.directory)
+        self.assertEqual(self.github.release["make_latest"], "true")
+
+    def test_legacy_release_cannot_displace_stable_latest(self):
+        context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", "2")
+        publisher = release.ReleasePublisher(context, self.github)
+        self.github.other_releases = [{"tag_name": "v1.0.0", "draft": False, "prerelease": False}]
+        self.assertEqual(publisher._make_latest(), "false")
 
     def test_drafts_and_prereleases_do_not_suppress_latest(self):
         self.github.other_releases = [
@@ -405,9 +438,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.github.release["make_latest"], "true")
 
     def test_latest_uses_numeric_version_order(self):
-        context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", "9")
+        context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", "12")
         publisher = release.ReleasePublisher(context, self.github)
-        self.github.other_releases = [{"tag_name": "v0.1.10", "draft": False, "prerelease": False}]
+        self.github.other_releases = [{"tag_name": "v1.0.10", "draft": False, "prerelease": False}]
         self.assertEqual(publisher._make_latest(), "false")
 
     def test_github_release_pages_are_flattened(self):

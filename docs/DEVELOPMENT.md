@@ -37,10 +37,10 @@ For a Universal app containing both `arm64` and `x86_64` code, run
 Both the app and gamma helper are built for each architecture, then merged with `lipo`. Optional `LUMA_APP_VERSION` and `LUMA_BUILD_NUMBER` values set the packaged app's version. For example, to build and validate a versioned Universal ZIP and its SHA-256 checksum, run
 
 ```sh
-./scripts/package-release.sh 0.1.1 1
+./scripts/package-release.sh 1.0.0 3
 ```
 
-This produces `dist/LumaLuma-0.1.1-macos-universal.zip` and `dist/LumaLuma-0.1.1-macos-universal.zip.sha256`. Packaging checks the two architectures, macOS 14 deployment target, version fields, signatures, bundled license and icon. It also unpacks the ZIP and verifies the resulting app.
+This produces `dist/LumaLuma-1.0.0-macos-universal.zip` and `dist/LumaLuma-1.0.0-macos-universal.zip.sha256`. Packaging checks the two architectures, macOS 14 deployment target, version fields, signatures, bundled license and icon. It also unpacks the ZIP and verifies the resulting app.
 
 Release packaging strips linker debug metadata from both executables before signing. It then scans the executable bytes for the checkout path and private home, volume and temporary-directory paths. A match or scan error fails the build before the staged bundle is installed. Debug builds retain their symbols for local debugging.
 
@@ -115,7 +115,7 @@ The **Build and test** GitHub Actions workflow runs the tests and release bundle
 
 Open **Actions → Release LumaLuma → Run workflow** and select the ref to build. The default is `main`; the workflow builds the commit fixed at dispatch time. The workflow definition is `.github/workflows/release.yml`.
 
-Each new dispatch uses version `0.1.<github.run_number>`, starting at `0.1.1`, and the same run number as its build number. A re-run keeps its original version. Failed runs can leave gaps. The shared release concurrency group processes runs one at a time and can queue up to 100 waiting runs.
+Workflow runs 1 and 2 use versions `0.1.1` and `0.1.2`. Run 3 uses `1.0.0`. Later runs use `1.0.<github.run_number − 3>`. The build number remains `github.run_number`. A re-run keeps its original version. Failed runs can leave gaps. The shared release concurrency group processes runs one at a time and can queue up to 100 waiting runs.
 
 The build job runs the tests and creates the Universal ZIP and checksum. Only the publishing job receives `contents: write`. It uploads and verifies both files in a draft before publishing the release. A re-run resumes its own draft or verifies its already published release. Version and commit conflicts fail with an error. The highest published version is designated **Latest**.
 
