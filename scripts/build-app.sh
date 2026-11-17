@@ -5,16 +5,16 @@ cd "$(dirname "$0")/.."
 configuration="${1:-release}"
 architecture="${2:-native}"
 if (( $# > 2 )); then
-    echo "Usage: $0 [release|debug] [native|universal]" >&2
+    echo "Usage: $0 [release|debug] [native|arm64|x86_64|universal]" >&2
     exit 2
 fi
 case "$configuration" in
     release|debug) ;;
-    *) echo "Usage: $0 [release|debug] [native|universal]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [release|debug] [native|arm64|x86_64|universal]" >&2; exit 2 ;;
 esac
 case "$architecture" in
-    native|universal) ;;
-    *) echo "Usage: $0 [release|debug] [native|universal]" >&2; exit 2 ;;
+    native|arm64|x86_64|universal) ;;
+    *) echo "Usage: $0 [release|debug] [native|arm64|x86_64|universal]" >&2; exit 2 ;;
 esac
 app_version="${LUMA_APP_VERSION:-}"
 build_number="${LUMA_BUILD_NUMBER:-}"
@@ -28,18 +28,23 @@ if [[ -n "$build_number" && ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 binary_dirs=()
-if [[ "$architecture" == universal ]]; then
-    for target in arm64 x86_64; do
-        scratch=".build/universal/$target"
+if [[ "$architecture" == native ]]; then
+    swift build -c "$configuration"
+    binary_dirs+=("$(swift build -c "$configuration" --show-bin-path)")
+else
+    targets=("$architecture")
+    if [[ "$architecture" == universal ]]; then
+        targets=(arm64 x86_64)
+    fi
+    for target in "${targets[@]}"; do
+        scratch=".build/architectures/$target"
         swift build -c "$configuration" --arch "$target" --scratch-path "$scratch"
         binary_dirs+=("$(swift build -c "$configuration" --arch "$target" --scratch-path "$scratch" --show-bin-path)")
     done
-else
-    swift build -c "$configuration"
-    binary_dirs+=("$(swift build -c "$configuration" --show-bin-path)")
 fi
-mkdir -p dist
-staging_dir="$(mktemp -d "$(pwd)/dist/.build-XXXXXX")"
+output_dir="${LUMA_APP_OUTPUT_DIR:-$(pwd)/dist}"
+mkdir -p "$output_dir"
+staging_dir="$(mktemp -d "$output_dir/.build-XXXXXX")"
 trap 'rm -rf -- "$staging_dir"' EXIT
 app="$staging_dir/Luma Luma.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
@@ -89,7 +94,7 @@ codesign --force --sign - "$app/Contents/Helpers/LumaLumaGammaHelper"
 codesign --force --sign - "$app"
 codesign --verify --all-architectures --strict "$app/Contents/Helpers/LumaLumaGammaHelper"
 codesign --verify --all-architectures --strict "$app"
-destination="$(pwd)/dist/Luma Luma.app"
+destination="$output_dir/Luma Luma.app"
 if [[ -e "$destination" ]]; then
     mv "$destination" "$staging_dir/previous.app"
 fi

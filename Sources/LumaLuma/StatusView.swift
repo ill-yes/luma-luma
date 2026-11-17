@@ -16,6 +16,9 @@ struct StatusView: View {
         default:
             break
         }
+        if controller.isWaitingForBoostDisplay {
+            return "Waiting for the Boost display"
+        }
         if controller.controlDisplays.isEmpty {
             return "No displays match your selection"
         }
@@ -59,7 +62,8 @@ struct StatusView: View {
 
     private var isBusy: Bool {
         if controller.isRestoringCurve { return true }
-        guard !controller.paused, controller.mode == .boost else { return false }
+        guard !controller.paused, controller.mode == .boost,
+              !controller.isWaitingForBoostDisplay else { return false }
         guard let report = controller.report else { return true }
         return report.hasPendingBoost
     }

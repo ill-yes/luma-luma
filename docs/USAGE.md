@@ -6,12 +6,14 @@ Configure Luma Luma's effects, brightness keys and automation.
 
 ## 📥 Installation and updates
 
-1. Open the release page and download `LumaLuma-<version>-macos-universal.zip` and its matching `.sha256` file. [Latest release](https://github.com/ill-yes/luma-luma/releases/latest)
-2. In the download directory, verify the ZIP with `shasum -a 256 -c LumaLuma-<version>-macos-universal.zip.sha256`, substituting the downloaded version.
-3. Expand the ZIP and move **Luma Luma.app** to **Applications**.
+1. Download `LumaLuma-<version>-macos-arm64.dmg` for Apple silicon or `LumaLuma-<version>-macos-x86_64.dmg` for Intel. Download the matching `.dmg.sha256` file too. [Latest release](https://github.com/ill-yes/luma-luma/releases/latest)
+2. In the download directory, run `shasum -a 256 -c` with the name of your `.dmg.sha256` file to verify the disk image.
+3. Open the DMG and drag **Luma Luma.app** onto **Applications**. Eject the disk image when copying finishes.
 4. Open the app and configure the optional brightness-key permission below.
 
-The Universal app contains native code for Apple Silicon and Intel Macs and requires macOS 14 or newer. Releases use ad-hoc signing. If macOS requests approval for the downloaded app, follow Apple's instructions for opening trusted software. [Apple's first-launch guidance](https://support.apple.com/en-us/102445)
+Luma Luma requires macOS 14 or newer. Releases use ad-hoc signing. If macOS requests approval for the downloaded app, follow Apple's instructions for opening trusted software. [Apple's first-launch guidance](https://support.apple.com/en-us/102445)
+
+Older releases provide `LumaLuma-<version>-macos-universal.zip` for both architectures. Verify it with its matching `.zip.sha256` file, expand the ZIP and move the app to **Applications**.
 
 To update, quit Luma Luma, replace the app in **Applications** with the newly downloaded version and reopen it. macOS may require you to re-add the updated app to its Accessibility permission list.
 
@@ -51,6 +53,8 @@ Use **Participation → Exclude** to remove the monitor from the effect. **Follo
 
 Profiles with a unique display identity are available when you reconnect the monitor. The brightness slider reads its current macOS brightness. Luma Luma applies connection-specific overrides while a monitor without a unique identity is connected.
 
+A manual Boost session targeting a monitor with a unique display identity can be restored across launches. If the monitor is disconnected, Boost waits for it to reconnect. For a monitor without a unique display identity, targeted Boost lasts for its current connection while Luma Luma is running.
+
 ### Boost areas
 
 | Area | Coverage |
@@ -84,7 +88,7 @@ At maximum native brightness, the next **Brighter** press starts HDR Boost on a 
 | **Brighter / Darker** | `1/16` of the Boost range per step. |
 | **Shift–Option + Brighter / Darker** | `1/64` of the Boost range per step. |
 
-The brightness keys use the built-in display if it participates in the group, otherwise the first participating display. The keyboard level lasts for the current session. Switching Boost on again uses the saved effect values.
+The brightness keys use the built-in display if it participates in the group, otherwise the first participating display. The keyboard level is restored when an active manual Boost session resumes, including after relaunch under the startup conditions below. Turning Boost off and back on starts with the saved effect values.
 
 ### Hardware brightness synchronization
 
@@ -97,11 +101,12 @@ The **General** tab provides startup and power controls.
 | Setting | Behavior |
 | --- | --- |
 | **Open at login** | Starts Luma Luma when you sign in. Move the app to Applications before enabling it. |
-| **Turn on boost when Luma Luma opens** | Starts Boost when the power rule is set to Manual and Auto-Boost is off. |
 | **Show icon in Dock** | Adds a Dock icon alongside the menu bar controls. |
 | **Enable boost → Manual** | Uses your manual selection and switch. |
 | **Enable boost → On power adapter** | Enables Boost on external power and disables Boost on battery when the power condition changes. |
 | **Enable boost → On power or above a battery level** | Enables Boost on external power or above the selected battery threshold when the power condition changes. |
+
+With the power rule set to **Manual** and Auto-Boost turned off, Luma Luma remembers whether you left Boost on or off and restores active Boost when it opens. With **Open at login** enabled, this also applies when you sign in after restarting your Mac.
 
 Power automation changes Off and Boost states. An active Eclipse or Ring Light effect keeps its selection.
 
@@ -142,6 +147,7 @@ Open **Diagnostics…** from the menu bar or choose **Settings… → Diagnostic
 | **Preparing HDR…** | Allow time for the display's HDR headroom to stabilize. |
 | **Restoring display…** | Wait for the previous curve to be released before further native brightness adjustments. |
 | **No displays match your selection** | Check the display selection and connected screens. |
+| **Waiting for the Boost display** | Reconnect the monitor targeted by Boost. |
 | **No HDR display available** | Select an HDR-capable display. Eclipse and Ring Light can still be used on other screens. |
 | **Waiting for a frontmost window** | Focus a standard application window inside a selected display. |
 | **macOS is limiting HDR headroom** | Check the display preset, native brightness, power state and temperature. |
@@ -151,4 +157,4 @@ Open **Diagnostics…** from the menu bar or choose **Settings… → Diagnostic
 
 If a replaced local build still reports missing access while its macOS permission switch is on, quit Luma Luma. Remove its entry from the privacy pane, add the current app bundle again and relaunch it.
 
-Display sleep, session lock and quitting release the effect. The bundled helper also starts restoration if the main app exits unexpectedly. Review the current automated coverage and device checks. [Validation](VALIDATION.md)
+Display sleep, session lock and quitting release the rendered effect. Luma Luma reapplies manual Boost when the display and session are active again. Power automation checks the current power source, and Auto-Boost takes fresh light readings. The bundled helper starts restoration if the main app exits unexpectedly. [Validation](VALIDATION.md)

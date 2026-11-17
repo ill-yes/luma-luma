@@ -126,21 +126,37 @@ struct DisplayDiagnosticRow: Identifiable, Equatable {
     let status: String
 }
 
-struct DisplayBoostSession {
-    var singleDisplay: UInt32?
-    var levels: [UInt32: Double] = [:]
+enum DisplayBoostKey: Hashable {
+    case persistent(UUID)
+    case connection(UInt32)
 
-    func strength(for display: UInt32, saved: @autoclosure () -> Double) -> Double {
+    var identity: UUID? {
+        guard case .persistent(let identity) = self else { return nil }
+        return identity
+    }
+}
+
+struct DisplayBoostSession: Equatable {
+    var singleDisplay: DisplayBoostKey?
+    var levels: [DisplayBoostKey: Double] = [:]
+
+    func strength(for display: DisplayBoostKey, saved: @autoclosure () -> Double) -> Double {
         guard singleDisplay == nil || singleDisplay == display else { return 0 }
         return levels[display] ?? saved()
     }
 
-    mutating func include(_ display: UInt32, among participating: [UInt32]) {
+    mutating func include(_ display: DisplayBoostKey, among participating: [DisplayBoostKey]) {
         guard let singleDisplay, singleDisplay != display else { return }
         for other in participating where other != singleDisplay {
             levels[other] = 0
         }
         self.singleDisplay = nil
+    }
+
+    mutating func removeDisconnectedConnections(keeping connected: Set<DisplayBoostKey>) -> Bool {
+        levels = levels.filter { key, _ in key.identity != nil || connected.contains(key) }
+        guard let singleDisplay, singleDisplay.identity == nil else { return false }
+        return !connected.contains(singleDisplay)
     }
 }
 

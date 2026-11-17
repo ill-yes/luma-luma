@@ -1,14 +1,21 @@
+import Foundation
+
 @main
 struct LightingStateTests {
-    static func main() {
+    static func main() throws {
         selectionWhileDisabled()
         enabledSelection()
         repeatedRequestsAreIdempotent()
         keyboardStrengthSurvivesNavigation()
-        manualRestartUsesSavedStrength()
+        reenablingBoostUsesSavedStrength()
         keyboardStartsBoostFromDisabled()
         rapidOffOnProducesDistinctTransitions()
-        print("Lighting selection and activation checks passed")
+        legacyStartupPreferenceProvidesInitialState()
+        corruptStoredStateStartsOff()
+        try manualBoostAndDisplayStrengthsSurviveReload()
+        connectionOnlyTargetStartsOffAfterReload()
+        storedStrengthsAreValidated()
+        print("Lighting selection, activation and persistence checks passed")
     }
 
     private static func selectionWhileDisabled() {
@@ -50,7 +57,7 @@ struct LightingStateTests {
         precondition(state.mode == .boost)
     }
 
-    private static func manualRestartUsesSavedStrength() {
+    private static func reenablingBoostUsesSavedStrength() {
         let savedStrength = 1.0
         var state = LightingState()
         _ = state.activate(.boost, keyboardBoost: 0.25)
@@ -81,5 +88,96 @@ struct LightingStateTests {
         precondition(state.setEnabled(false) && state.mode == .off)
         precondition(state.setEnabled(true) && state.mode == .eclipse)
         precondition(state.setEnabled(false) && state.mode == .off)
+    }
+
+    private static func legacyStartupPreferenceProvidesInitialState() {
+        withDefaults { defaults in
+            precondition(StoredManualLighting.load(from: defaults).lighting.mode == .off)
+            defaults.set(true, forKey: "startEnabled")
+            precondition(StoredManualLighting.load(from: defaults).lighting.mode == .off)
+        }
+        withDefaults { defaults in
+            defaults.set(true, forKey: "startEnabled")
+            let migrated = StoredManualLighting.load(from: defaults)
+            precondition(migrated.lighting.mode == .boost)
+            precondition(migrated.displayBoost == DisplayBoostSession())
+            defaults.set(false, forKey: "startEnabled")
+            precondition(StoredManualLighting.load(from: defaults) == migrated)
+        }
+    }
+
+    private static func corruptStoredStateStartsOff() {
+        withDefaults { defaults in
+            defaults.set(true, forKey: "startEnabled")
+            defaults.set(Data("{}".utf8), forKey: "manualLightingState")
+            let stored = StoredManualLighting.load(from: defaults)
+            precondition(stored.lighting.mode == .off)
+            precondition(stored.displayBoost == DisplayBoostSession())
+        }
+    }
+
+    private static func manualBoostAndDisplayStrengthsSurviveReload() throws {
+        try withDefaults { defaults in
+            let primary = UUID()
+            let secondary = UUID()
+            let first = DisplayBoostKey.persistent(primary)
+            let second = DisplayBoostKey.persistent(secondary)
+            let profiles = try JSONEncoder().encode([primary: DisplayProfile(boost: 0.75)])
+            defaults.set(profiles, forKey: "displayProfiles")
+            defaults.set(true, forKey: "startEnabled")
+            var lighting = LightingState()
+            _ = lighting.activate(.boost, keyboardBoost: 0.3125)
+
+            let group = DisplayBoostSession(levels: [first: 0.5625, second: 0, .connection(9): 1])
+            StoredManualLighting(lighting: lighting, displayBoost: group).save(to: defaults)
+            let restoredGroup = StoredManualLighting.load(from: defaults)
+            precondition(restoredGroup.lighting == lighting)
+            precondition(restoredGroup.displayBoost == DisplayBoostSession(levels: [first: 0.5625, second: 0]))
+            precondition(defaults.data(forKey: "displayProfiles") == profiles)
+
+            let single = DisplayBoostSession(singleDisplay: second, levels: [second: 0.25])
+            StoredManualLighting(lighting: lighting, displayBoost: single).save(to: defaults)
+            let restoredSingle = StoredManualLighting.load(from: defaults)
+            precondition(restoredSingle.lighting == lighting && restoredSingle.displayBoost == single)
+
+            _ = lighting.setEnabled(false)
+            _ = lighting.selectEffect(.ring)
+            StoredManualLighting(lighting: lighting, displayBoost: single).save(to: defaults)
+            let restoredOff = StoredManualLighting.load(from: defaults)
+            precondition(restoredOff.lighting.selectedEffect == .ring && restoredOff.lighting.mode == .off)
+            precondition(restoredOff.displayBoost == DisplayBoostSession())
+        }
+    }
+
+    private static func connectionOnlyTargetStartsOffAfterReload() {
+        withDefaults { defaults in
+            var lighting = LightingState()
+            _ = lighting.activate(.boost, keyboardBoost: 0.5)
+            let target = DisplayBoostKey.connection(42)
+            let session = DisplayBoostSession(singleDisplay: target, levels: [target: 0.5])
+            StoredManualLighting(lighting: lighting, displayBoost: session).save(to: defaults)
+            let restored = StoredManualLighting.load(from: defaults)
+            precondition(restored.lighting.selectedEffect == .boost && restored.lighting.mode == .off)
+            precondition(restored.lighting.keyboardBoost == nil && restored.displayBoost == DisplayBoostSession())
+        }
+    }
+
+    private static func storedStrengthsAreValidated() {
+        var lighting = LightingState()
+        _ = lighting.activate(.boost, keyboardBoost: .infinity)
+        let first = DisplayBoostKey.persistent(UUID())
+        let second = DisplayBoostKey.persistent(UUID())
+        let third = DisplayBoostKey.persistent(UUID())
+        let displayBoost = DisplayBoostSession(levels: [first: -1, second: 2, third: .nan])
+        let stored = StoredManualLighting(lighting: lighting, displayBoost: displayBoost)
+        precondition(stored.lighting.keyboardBoost == nil)
+        precondition(stored.displayBoost.levels == [first: 0, second: 1])
+    }
+
+    private static func withDefaults(_ test: (UserDefaults) throws -> Void) rethrows {
+        let name = "dev.illyes.lumaluma.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        try test(defaults)
     }
 }

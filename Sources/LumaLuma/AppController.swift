@@ -28,6 +28,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     var hasActiveEffect: Bool {
         !paused && mode != .off && report?.displays.values.contains(where: \.hasActiveEffect) == true
     }
+    var isWaitingForBoostDisplay: Bool {
+        guard mode == .boost, let target = displayBoost.singleDisplay else { return false }
+        return !selectedDisplays.contains { $0.boostKey == target }
+    }
 
     private let log = Logger(subsystem: "dev.illyes.lumaluma", category: "display")
     private let renderer = DisplayRenderer()
@@ -149,25 +153,32 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
         takeManualControl()
         changeLighting { $0.activate(effect) }
+        saveManualLighting()
     }
 
     func selectEffect(_ effect: LightingEffect) {
         guard selectedEffect != effect else { return }
         takeManualControl()
         changeLighting { $0.selectEffect(effect) }
+        saveManualLighting()
     }
 
     func setEnabled(_ enabled: Bool) {
-        guard isEnabled != enabled else { return }
         takeManualControl(suppressAuto: !enabled)
         changeLighting { $0.setEnabled(enabled) }
+        saveManualLighting()
     }
 
     private func changeLighting(_ change: (inout LightingState) -> Bool) {
         var next = lighting
         guard change(&next) else { return }
+        setLighting(next)
+    }
+
+    private func setLighting(_ next: LightingState, cancelBrightnessTransition: Bool = true) {
+        guard next != lighting else { return }
         if next.mode != mode {
-            brightnessTransition.cancel()
+            if cancelBrightnessTransition { brightnessTransition.cancel() }
             brightnessError = nil
             displayBoost = DisplayBoostSession()
             resetRendering()
@@ -177,6 +188,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         queueRefresh()
         updateRefreshTimer()
         updateStatusItem()
+    }
+
+    private func saveManualLighting() {
+        guard ambientDisplayID == nil, !powerOwnsBoost else { return }
+        preferences.manualLighting = StoredManualLighting(lighting: lighting, displayBoost: displayBoost)
     }
 
     private func takeManualControl(suppressAuto: Bool = false) {
@@ -212,13 +228,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func reconcileControlTarget() {
         let selected = selectedDisplays
-        if let target = displayBoost.singleDisplay, !selected.contains(where: { $0.id == target }) {
-            if ambientDisplayID != nil {
-                stopAmbientBoost()
-                ambientPolicy.pause()
-            } else {
-                changeLighting { $0.setEnabled(false) }
-            }
+        if let target = ambientDisplayID, !selected.contains(where: { $0.id == target }) {
+            stopAmbientBoost()
+            ambientPolicy.pause()
         }
         if !selected.contains(where: { $0.id == selectedDisplayID }) {
             brightnessTransition.cancel()
@@ -236,12 +248,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         for display in connected {
             if let identity = display.identity {
                 if let previous = knownIdentities[display.id], previous != identity {
-                    if displayBoost.singleDisplay == display.id {
+                    if ambientDisplayID == display.id {
                         stopAmbientBoost()
-                        changeLighting { $0.setEnabled(false) }
+                        ambientPolicy.pause()
                     }
                     renderer.forgetDisplay(display.id)
-                    displayBoost.levels[display.id] = nil
                     connectionProfiles[display.id] = nil
                 }
                 if let oldID = knownIdentities.first(where: { $0.value == identity && $0.key != display.id })?.key {
@@ -251,8 +262,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                 knownIdentities[display.id] = identity
             }
         }
-        let liveIDs = Set(connected.map(\.id))
-        displayBoost.levels = displayBoost.levels.filter { liveIDs.contains($0.key) }
+        if displayBoost.removeDisconnectedConnections(keeping: Set(connected.map(\.boostKey))),
+           ambientDisplayID == nil {
+            changeLighting { $0.setEnabled(false) }
+        }
         connectionProfiles = connectionProfiles.filter { id, _ in
             connected.contains { $0.id == id && $0.identity == nil }
         }
@@ -277,7 +290,14 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         let profile = profile.validated
         let previous = displayProfile(for: id)
         guard previous != profile else { return }
-        if previous.boost != profile.boost { displayBoost.levels[id] = nil }
+        if previous.boost != profile.boost {
+            displayBoost.levels[display.boostKey] = nil
+            let saved = preferences.manualLighting
+            var savedBoost = saved.displayBoost
+            if savedBoost.levels.removeValue(forKey: display.boostKey) != nil {
+                preferences.manualLighting = StoredManualLighting(lighting: saved.lighting, displayBoost: savedBoost)
+            }
+        }
         if let identity = display.identity {
             preferences.setDisplayProfile(profile, for: identity)
         } else {
@@ -325,10 +345,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         displayProfile(for: id).boost ?? preferences.boost
     }
 
-    private func requestedBoost(for id: CGDirectDisplayID) -> Double {
+    private func requestedBoost(for display: ConnectedDisplay) -> Double {
         guard mode == .boost else { return 0 }
         return displayBoost.strength(
-            for: id, saved: displayProfile(for: id).boost ?? lighting.keyboardBoost ?? preferences.boost
+            for: display.boostKey,
+            saved: displayProfile(for: display.id).boost ?? lighting.keyboardBoost ?? preferences.boost
         )
     }
 
@@ -336,7 +357,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         guard let display = controlledDisplay else { return nil }
         let level = nativeLevels[display.id]
         let hasNativeControl = level != nil && hardware.supportsBrightnessControl(on: display.id)
-        let requested = requestedBoost(for: display.id)
+        let requested = requestedBoost(for: display)
         let terminalFailure = report?.displays[display.id]?.boostStatus.isTerminalFailure == true
         let pending = brightnessTransition.request.flatMap { $0.displayID == display.id ? $0.destination : nil }
         if hasNativeControl, let level {
@@ -378,7 +399,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         brightnessError = nil
         if control.mode == .boost {
             guard case .boost(let strength) = destination else { return }
-            setControlBoost(strength, on: display.id)
+            setControlBoost(strength, on: display)
             return
         }
         brightnessTransition.submit(destination, for: display.id)
@@ -426,21 +447,25 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                 finishBrightnessChange(error: "Could not confirm 100% macOS brightness")
                 return
             }
-            takeManualControl()
             if mode != .boost {
                 changeLighting { $0.activate(.boost) }
-                displayBoost.singleDisplay = id
+                displayBoost.singleDisplay = display.boostKey
             } else if report?.displays[id]?.boostStatus.isTerminalFailure == true {
                 renderer.restoreBrightness(on: id) { _ in }
             }
-            setControlBoost(strength, on: id)
+            setControlBoost(strength, on: display)
             finishBrightnessChange()
         case .native(let level):
             let lowering = level < (hardware.brightness(of: id) ?? 0)
-            if display.builtIn, requestedBoost(for: id) > 0 || lowering {
+            if requestedBoost(for: display) > 0 || (display.builtIn && lowering) {
                 takeManualControl(suppressAuto: true)
             }
-            if mode == .boost { displayBoost.levels[id] = 0 }
+            if mode == .boost {
+                displayBoost.levels[display.boostKey] = 0
+                // The native write still needs to wait for the curve to be restored.
+                disableBoostWhenIdle(cancelBrightnessTransition: false)
+                saveManualLighting()
+            }
             if !restored {
                 awaitDisplayRestoration(on: id)
                 return
@@ -473,19 +498,25 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    private func disableBoostWhenIdle() {
-        if mode == .boost, !selectedDisplays.contains(where: { requestedBoost(for: $0.id) > 0 }) {
-            changeLighting { $0.setEnabled(false) }
-        }
+    private func disableBoostWhenIdle(cancelBrightnessTransition: Bool = true) {
+        guard mode == .boost, !isWaitingForBoostDisplay,
+              !selectedDisplays.contains(where: { requestedBoost(for: $0) > 0 }) else { return }
+        var next = lighting
+        _ = next.setEnabled(false)
+        setLighting(next, cancelBrightnessTransition: cancelBrightnessTransition)
+        saveManualLighting()
     }
 
-    private func setControlBoost(_ strength: Double, on id: CGDirectDisplayID) {
-        if mode == .boost, strength > 0 {
-            takeManualControl()
-            displayBoost.include(id, among: selectedDisplays.map(\.id))
+    private func setControlBoost(_ strength: Double, on display: ConnectedDisplay) {
+        if mode == .boost {
+            takeManualControl(suppressAuto: strength == 0)
+            if strength > 0 {
+                displayBoost.include(display.boostKey, among: selectedDisplays.map(\.boostKey))
+            }
         }
-        setProfileValue(\.boost, to: strength, for: id)
-        displayBoost.levels[id] = nil
+        setProfileValue(\.boost, to: strength, for: display.id)
+        displayBoost.levels[display.boostKey] = nil
+        if mode == .boost { saveManualLighting() }
         queueRefresh()
         updateRefreshTimer()
     }
@@ -723,21 +754,22 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private func updatePreferences(initial: Bool = false) {
         guard ready else { return }
         reconcileControlTarget()
-        if previousDefaultBoost != preferences.boost {
-            previousDefaultBoost = preferences.boost
+        if let previousDefaultBoost, previousDefaultBoost != preferences.boost {
             changeLighting { $0.useManualBoost() }
+            let saved = preferences.manualLighting
+            var savedLighting = saved.lighting
+            if savedLighting.useManualBoost() {
+                preferences.manualLighting = StoredManualLighting(
+                    lighting: savedLighting, displayBoost: saved.displayBoost
+                )
+            }
         }
+        previousDefaultBoost = preferences.boost
         let policy: NSApplication.ActivationPolicy = preferences.showDockIcon ? .regular : .accessory
         if NSApplication.shared.activationPolicy() != policy {
             NSApplication.shared.setActivationPolicy(policy)
         }
-        var error = shortcuts.update(bindings: preferences.shortcuts)
-        let needsNativeKeys = preferences.nativeBrightnessKeys || preferences.syncHardwareBrightness
-        if !shortcuts.setBrightnessKeysEnabled(needsNativeKeys), needsNativeKeys {
-            let missing = "Allow Luma Luma in Privacy & Security → Accessibility, then turn the option off and back on."
-            error = [error, missing].compactMap { $0 }.joined(separator: " ")
-        }
-        if error != shortcutError { shortcutError = error }
+        updateShortcuts()
         if !preferences.showBrightnessIndicator { brightnessIndicator?.hide() }
         let ambientChanged = previousAmbientEnabled != preferences.ambientBoostEnabled
         let ruleChanged = previousRule != preferences.powerRule || previousThreshold != preferences.batteryThreshold
@@ -759,12 +791,23 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             automationResult = nil
             refreshAutomation()
         }
-        if initial, !preferences.ambientBoostEnabled, preferences.powerRule == .manual,
-           preferences.startEnabled, mode == .off {
-            select(.boost)
+        if initial, !preferences.ambientBoostEnabled, preferences.powerRule == .manual {
+            let saved = preferences.manualLighting
+            setLighting(saved.lighting)
+            displayBoost = saved.displayBoost
         }
         queueRefresh()
         updateRefreshTimer()
+    }
+
+    private func updateShortcuts() {
+        var error = shortcuts.update(bindings: preferences.shortcuts)
+        let needsNativeKeys = preferences.nativeBrightnessKeys || preferences.syncHardwareBrightness
+        if !shortcuts.setBrightnessKeysEnabled(needsNativeKeys), needsNativeKeys {
+            let missing = "Allow Luma Luma in Privacy & Security → Accessibility, then turn the option off and back on."
+            error = [error, missing].compactMap { $0 }.joined(separator: " ")
+        }
+        if error != shortcutError { shortcutError = error }
     }
 
     private func updateRefreshTimer() {
@@ -775,7 +818,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             tick = nil
             return
         }
-        if mode == .boost, selectedDisplays.contains(where: { requestedBoost(for: $0.id) > 0 }) {
+        if mode == .boost, selectedDisplays.contains(where: { requestedBoost(for: $0) > 0 }) {
             interval = 0.25
         } else if controlsAreVisible {
             interval = 0.5
@@ -842,7 +885,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func refreshAutomation() {
-        guard !paused else { return }
+        guard ready, !paused else { return }
         if preferences.ambientBoostEnabled {
             refreshAmbientBoost()
             return
@@ -885,7 +928,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if wantsBoost, mode == .off, let target {
             changeLighting { $0.activate(.boost) }
             ambientDisplayID = target.id
-            displayBoost.singleDisplay = target.id
+            displayBoost.singleDisplay = target.boostKey
             queueRefresh()
             updateRefreshTimer()
         }
@@ -936,7 +979,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         let targets = selectedDisplays.map { display in
             let profile = displayProfile(for: display.id)
             return DisplayRenderTarget(
-                id: display.id, screen: display.screen, boost: requestedBoost(for: display.id),
+                id: display.id, screen: display.screen, boost: requestedBoost(for: display),
                 dim: mode == .eclipse ? profile.dim ?? preferences.dim : 0,
                 region: profile.region ?? preferences.region,
                 ring: mode == .ring ? profile.ringStrength ?? preferences.ringStrength : 0,
@@ -986,8 +1029,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             select(.boost)
             value = savedBoost(for: display.id)
         case .boost:
-            value = min(1, max(0, requestedBoost(for: display.id) + amount))
-            setControlBoost(value, on: display.id)
+            value = min(1, max(0, requestedBoost(for: display) + amount))
+            setControlBoost(value, on: display)
         case .eclipse:
             let dim = min(0.95, max(0, (displayProfile(for: display.id).dim ?? preferences.dim) - amount))
             setProfileValue(\.dim, to: dim, for: display.id)
@@ -1027,7 +1070,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if preferences.nativeBrightnessKeys {
             switch mode {
             case .off, .boost:
-                let strength = requestedBoost(for: reference.id)
+                let strength = requestedBoost(for: reference)
                 let state = renderer.keyBoostState(
                     displayID: reference.id, screen: screen, region: displayProfile(for: reference.id).region ?? preferences.region,
                     requested: strength > 0
@@ -1083,19 +1126,20 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                 changeLighting { $0.activate(.boost, keyboardBoost: value) }
             }
         } else if value == 0 {
-            displayBoost.levels[display.id] = 0
-            if !selectedDisplays.contains(where: { requestedBoost(for: $0.id) > 0 }) {
-                changeLighting { $0.setEnabled(false) }
-            } else {
+            displayBoost.levels[display.boostKey] = 0
+            disableBoostWhenIdle()
+            if mode == .boost {
                 renderer.restoreBrightness(on: display.id) { _ in }
             }
         } else {
             if mode != .boost {
                 changeLighting { $0.activate(.boost) }
+                displayBoost.singleDisplay = display.boostKey
             }
-            displayBoost.include(display.id, among: selectedDisplays.map(\.id))
-            displayBoost.levels[display.id] = value
+            displayBoost.include(display.boostKey, among: selectedDisplays.map(\.boostKey))
+            displayBoost.levels[display.boostKey] = value
         }
+        saveManualLighting()
         queueRefresh()
         updateRefreshTimer()
         let builtInFull = display.builtIn && (displayProfile(for: display.id).region ?? preferences.region) == .full
@@ -1160,6 +1204,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             updateStatusItem()
         } else {
             updateDisplayInventory()
+            updateShortcuts()
             refreshAutomation()
             queueRefresh()
         }

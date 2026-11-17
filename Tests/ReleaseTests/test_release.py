@@ -6,13 +6,11 @@ import io
 import json
 import os
 from pathlib import Path
-import plistlib
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import zipfile
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "release.py"
@@ -22,17 +20,14 @@ sys.modules[SPEC.name] = release
 SPEC.loader.exec_module(release)
 
 
-def archive_bytes(context, version=None):
-    data = io.BytesIO()
-    with zipfile.ZipFile(data, "w") as archive:
-        archive.writestr("Luma Luma.app/Contents/Info.plist", plistlib.dumps({
-            "CFBundleIdentifier": "dev.illyes.lumaluma",
-            "CFBundleShortVersionString": version or context.version,
-            "CFBundleVersion": context.run_number,
-        }))
-        for name in ("MacOS/LumaLuma", "Helpers/LumaLumaGammaHelper", "Resources/LICENSE", "Resources/LumaLuma.icns"):
-            archive.writestr(f"Luma Luma.app/Contents/{name}", b"test fixture")
-    return data.getvalue()
+def disk_image_bytes(context, target, **overrides):
+    metadata = {"version": context.version, "build_number": context.run_number, "architecture": target}
+    metadata.update(overrides)
+    return json.dumps(metadata).encode()
+
+
+def checksum_bytes(name, image):
+    return f"{hashlib.sha256(image).hexdigest()}  {name}\n".encode()
 
 
 class FakeGitHub:
@@ -45,7 +40,7 @@ class FakeGitHub:
         self.next_asset = 10
         self.mutations = []
         self.other_releases = []
-        self.upload_failure = False
+        self.upload_failure = None
         self.publish_failure = False
 
     def api(self, method, path, payload=None, allow_missing=False):
@@ -84,8 +79,8 @@ class FakeGitHub:
 
     def upload(self, release_id, path):
         self.mutations.append(("UPLOAD", path.name, None))
-        if self.upload_failure:
-            self.upload_failure = False
+        if self.upload_failure == path.name:
+            self.upload_failure = None
             self.add_asset(path.name, b"", state="starter")
             raise release.ReleaseError("Upload interrupted")
         return self.add_asset(path.name, path.read_bytes())
@@ -102,19 +97,30 @@ class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", "3")
         self.github = FakeGitHub(self.context)
-        self.publisher = release.ReleasePublisher(self.context, self.github)
+        self.image_verifications = []
+        self.publisher = release.ReleasePublisher(self.context, self.github, image_verifier=self.inspect_image)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
-        self.archive = archive_bytes(self.context)
-        self.checksum = f"{hashlib.sha256(self.archive).hexdigest()}  {self.context.archive_name}\n".encode()
-        (self.directory / self.context.archive_name).write_bytes(self.archive)
-        (self.directory / self.context.asset_names[1]).write_bytes(self.checksum)
+        self.assets = {}
+        for architecture, name in self.context.disk_images.items():
+            image = disk_image_bytes(self.context, architecture)
+            self.assets[name] = image
+            self.assets[f"{name}.sha256"] = checksum_bytes(name, image)
+        for name, contents in self.assets.items():
+            (self.directory / name).write_bytes(contents)
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {}, clear=True).start()
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
+
+    def inspect_image(self, path, version, build_number, architecture):
+        self.image_verifications.append(path)
+        image = json.loads(path.read_bytes())
+        for key, value in (("version", version), ("build_number", build_number), ("architecture", architecture)):
+            if image[key] != value:
+                raise release.ReleaseError(f"Wrong {key} in {path.name}")
 
     def draft(self):
         self.github.release = {
@@ -127,8 +133,8 @@ class ReleaseTests(unittest.TestCase):
         result = self.draft()
         result["draft"] = False
         self.github.tag_commit = self.context.commit
-        self.github.add_asset(self.context.asset_names[0], self.archive)
-        self.github.add_asset(self.context.asset_names[1], self.checksum)
+        for name, contents in self.assets.items():
+            self.github.add_asset(name, contents)
         return result
 
     def test_run_numbers_form_patch_versions(self):
@@ -164,40 +170,38 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(self.github.release["draft"])
         self.assertEqual(self.github.tag_commit, self.context.commit)
         self.assertEqual(self.github.release["make_latest"], "true")
-        self.assertEqual(len(self.github.release["assets"]), 2)
+        self.assertEqual(set(asset["name"] for asset in self.github.release["assets"]), set(self.assets))
+        self.assertEqual(self.image_verifications, [self.directory / name for name in self.context.disk_images.values()])
+
+    def test_release_has_architecture_specific_asset_names(self):
+        self.assertEqual(self.context.asset_names, (
+            "LumaLuma-1.0.0-macos-arm64.dmg", "LumaLuma-1.0.0-macos-arm64.dmg.sha256",
+            "LumaLuma-1.0.0-macos-x86_64.dmg", "LumaLuma-1.0.0-macos-x86_64.dmg.sha256",
+        ))
+
+    def test_published_summary_includes_both_image_checksums(self):
+        summary = self.directory / "summary"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+            self.publisher.publish(self.directory)
+        for name in self.context.disk_images.values():
+            self.assertIn(f"`{name}` · SHA-256 `{hashlib.sha256(self.assets[name]).hexdigest()}`", summary.read_text())
 
     def test_published_rerun_needs_no_local_artifacts_or_mutations(self):
         self.published()
         self.assertTrue(self.publisher.prepare())
         self.assertEqual(self.publisher.publish(self.directory / "missing"), self.context.url)
         self.assertEqual(self.github.mutations, [])
-
-    def test_legacy_published_reruns_keep_their_release_identity(self):
-        for number, version in (("1", "0.1.1"), ("2", "0.1.2")):
-            with self.subTest(number=number):
-                context = release.ReleaseContext("ill-yes/luma-luma", "a" * 40, "123", number)
-                github = FakeGitHub(context)
-                publisher = release.ReleasePublisher(context, github)
-                github.release = {
-                    "id": 1, "tag_name": f"v{version}", "target_commitish": context.commit,
-                    "body": publisher._notes(), "draft": False, "prerelease": False, "assets": [],
-                }
-                github.tag_commit = context.commit
-                archive = archive_bytes(context)
-                checksum = f"{hashlib.sha256(archive).hexdigest()}  {context.archive_name}\n".encode()
-                github.add_asset(context.archive_name, archive)
-                github.add_asset(context.asset_names[1], checksum)
-                self.assertTrue(publisher.prepare())
-                self.assertEqual(publisher.publish(self.directory / "missing"), context.url)
-                self.assertEqual(context.version, version)
-                self.assertEqual(github.mutations, [])
+        self.assertEqual([path.name for path in self.image_verifications], list(self.context.disk_images.values()) * 2)
+        self.assertFalse(any(path.exists() for path in self.image_verifications))
 
     def test_own_draft_is_resumed(self):
         self.draft()
-        self.github.add_asset(self.context.archive_name, self.archive)
+        first_asset = self.context.asset_names[0]
+        self.github.add_asset(first_asset, self.assets[first_asset])
         self.publisher.publish(self.directory)
         self.assertFalse(any(method == "POST" for method, _, _ in self.github.mutations))
-        self.assertEqual(sum(method == "UPLOAD" for method, _, _ in self.github.mutations), 1)
+        uploaded = [name for method, name, _ in self.github.mutations if method == "UPLOAD"]
+        self.assertEqual(uploaded, list(self.context.asset_names[1:]))
 
     def test_draft_lookup_uses_release_list_and_id(self):
         draft = self.draft()
@@ -263,19 +267,24 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.github.mutations, [])
 
     def test_interrupted_upload_is_repaired_on_retry(self):
-        self.github.upload_failure = True
+        intel_image = self.context.disk_images["x86_64"]
+        self.github.upload_failure = intel_image
         with self.assertRaisesRegex(release.ReleaseError, "Upload interrupted"):
             self.publisher.publish(self.directory)
         self.assertTrue(self.github.release["draft"])
-        self.assertEqual(self.github.release["assets"][0]["state"], "starter")
+        assets = {asset["name"]: asset for asset in self.github.release["assets"]}
+        self.assertEqual(assets[intel_image]["state"], "starter")
         self.assertFalse(self.publisher.prepare())
+        self.github.mutations.clear()
         self.publisher.publish(self.directory)
         self.assertFalse(self.github.release["draft"])
         self.assertTrue(any(method == "DELETE" for method, _, _ in self.github.mutations))
+        uploaded = [name for method, name, _ in self.github.mutations if method == "UPLOAD"]
+        self.assertEqual(uploaded, [intel_image, f"{intel_image}.sha256"])
 
     def test_wrong_asset_in_own_draft_is_replaced(self):
         self.draft()
-        self.github.add_asset(self.context.archive_name, b"previous incomplete output")
+        self.github.add_asset(self.context.disk_images["arm64"], b"previous incomplete output")
         self.publisher.publish(self.directory)
         self.assertTrue(any(method == "DELETE" for method, _, _ in self.github.mutations))
 
@@ -284,11 +293,27 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "Publication failed"):
             self.publisher.publish(self.directory)
         self.assertTrue(self.github.release["draft"])
-        self.assertEqual(len(self.github.release["assets"]), 2)
+        self.assertEqual(len(self.github.release["assets"]), 4)
         self.github.publish_failure = False
         self.github.mutations.clear()
         self.publisher.publish(self.directory)
         self.assertFalse(any(method == "UPLOAD" for method, _, _ in self.github.mutations))
+
+    def test_uploaded_bytes_must_match_the_verified_local_images(self):
+        name = self.context.disk_images["x86_64"]
+        original_upload = self.github.upload
+
+        def upload(release_id, path):
+            asset = original_upload(release_id, path)
+            if path.name == name:
+                self.github.asset_contents[asset["id"]] = b"x" + self.assets[name][1:]
+            return asset
+
+        self.github.upload = upload
+        with self.assertRaisesRegex(release.ReleaseError, "differs from the local artifact"):
+            self.publisher.publish(self.directory)
+        self.assertTrue(self.github.release["draft"])
+        self.assertFalse(any(method == "PATCH" for method, _, _ in self.github.mutations))
 
     def test_foreign_release_is_rejected(self):
         self.draft()["body"] = "Created by someone else"
@@ -363,7 +388,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_draft_changed_after_asset_deletion_stops_upload(self):
         self.draft()
-        self.github.add_asset(self.context.archive_name, b"old")
+        self.github.add_asset(self.context.disk_images["arm64"], b"old")
         original = self.github.api
         def changed_api(method, path, payload=None, allow_missing=False):
             result = original(method, path, payload, allow_missing)
@@ -390,9 +415,10 @@ class ReleaseTests(unittest.TestCase):
 
     def test_corrupt_published_data_is_rejected_without_repair(self):
         self.published()
-        asset = self.github.release["assets"][0]
-        self.github.asset_contents[asset["id"]] = b"bad"
-        with self.assertRaises(release.ReleaseError):
+        name = self.context.disk_images["x86_64"]
+        intel_image = next(asset for asset in self.github.release["assets"] if asset["name"] == name)
+        self.github.asset_contents[intel_image["id"]] = b"x" + self.assets[name][1:]
+        with self.assertRaisesRegex(release.ReleaseError, "checksum"):
             self.publisher.publish(self.directory)
         self.assertEqual(self.github.mutations, [])
 
@@ -402,16 +428,55 @@ class ReleaseTests(unittest.TestCase):
             self.publisher.prepare()
 
     def test_local_wrong_checksum_stops_before_mutation(self):
-        (self.directory / self.context.asset_names[1]).write_text("0" * 64 + f"  {self.context.archive_name}\n")
+        name = self.context.disk_images["x86_64"]
+        (self.directory / f"{name}.sha256").write_text("0" * 64 + f"  {name}\n")
         with self.assertRaisesRegex(release.ReleaseError, "checksum"):
             self.publisher.publish(self.directory)
         self.assertEqual(self.github.mutations, [])
+        self.assertEqual(self.image_verifications, [])
 
-    def test_wrong_bundle_version_is_rejected(self):
-        data = archive_bytes(self.context, version="9.9.9")
-        checksum = f"{hashlib.sha256(data).hexdigest()}  {self.context.archive_name}\n".encode()
+    def test_checksum_cannot_name_another_disk_image(self):
+        name = self.context.disk_images["x86_64"]
+        other_name = self.context.disk_images["arm64"]
+        (self.directory / f"{name}.sha256").write_bytes(checksum_bytes(other_name, self.assets[name]))
+        with self.assertRaisesRegex(release.ReleaseError, "checksum must name"):
+            self.publisher.publish(self.directory)
+        self.assertEqual(self.github.mutations, [])
+
+    def test_missing_local_checksum_stops_before_mutation(self):
+        (self.directory / f"{self.context.disk_images['x86_64']}.sha256").unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "local release"):
+            self.publisher.publish(self.directory)
+        self.assertEqual(self.github.mutations, [])
+
+    def test_wrong_disk_image_version_or_architecture_stops_before_mutation(self):
+        name = self.context.disk_images["x86_64"]
+        for field, value in (("version", "9.9.9"), ("build_number", "99"), ("architecture", "arm64")):
+            with self.subTest(field=field):
+                image = disk_image_bytes(self.context, "x86_64", **{field: value})
+                (self.directory / name).write_bytes(image)
+                (self.directory / f"{name}.sha256").write_bytes(checksum_bytes(name, image))
+                with self.assertRaisesRegex(release.ReleaseError, field):
+                    self.publisher.publish(self.directory)
+                self.assertEqual(self.github.mutations, [])
+
+    def test_published_image_is_inspected_after_checksum_passes(self):
+        name = self.context.disk_images["x86_64"]
+        self.assets[name] = disk_image_bytes(self.context, "x86_64", version="9.9.9")
+        self.assets[f"{name}.sha256"] = checksum_bytes(name, self.assets[name])
+        self.published()
         with self.assertRaisesRegex(release.ReleaseError, "version"):
-            release.verify_archive(self.context, data, checksum)
+            self.publisher.prepare()
+        self.assertEqual(self.github.mutations, [])
+        self.assertFalse(any(path.exists() for path in self.image_verifications))
+
+    def test_verifier_invokes_platform_script_and_handles_failure(self):
+        path = self.directory / self.context.disk_images["arm64"]
+        command = [str(SCRIPT.with_name("verify-dmg.sh")), str(path.resolve()), "1.0.0", "3", "arm64"]
+        with patch.object(subprocess, "run", side_effect=subprocess.CalledProcessError(1, command)) as run:
+            with self.assertRaisesRegex(release.ReleaseError, "Disk image verification failed"):
+                release.verify_disk_image(path, "1.0.0", "3", "arm64")
+        run.assert_called_once_with(command, check=True)
 
     def test_newer_published_version_remains_latest(self):
         self.github.other_releases = [{"tag_name": "v1.0.1", "draft": False, "prerelease": False}]

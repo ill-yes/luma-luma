@@ -4,16 +4,14 @@
 import argparse
 from dataclasses import dataclass
 import hashlib
-import io
 import json
 import os
-from pathlib import Path, PurePosixPath
-import plistlib
+from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
-import zipfile
 
 
 class ReleaseError(Exception):
@@ -63,12 +61,15 @@ class ReleaseContext:
         return f"v{self.version}"
 
     @property
-    def archive_name(self):
-        return f"LumaLuma-{self.version}-macos-universal.zip"
+    def disk_images(self):
+        return {
+            architecture: f"LumaLuma-{self.version}-macos-{architecture}.dmg"
+            for architecture in ("arm64", "x86_64")
+        }
 
     @property
     def asset_names(self):
-        return (self.archive_name, f"{self.archive_name}.sha256")
+        return tuple(name for image in self.disk_images.values() for name in (image, f"{image}.sha256"))
 
     @property
     def marker(self):
@@ -131,51 +132,32 @@ class GitHub:
         return json.loads(output)
 
 
-def verify_archive(context, archive, checksum):
+def verify_checksum(name, image, checksum):
     try:
-        checksum_text = checksum.decode("ascii").strip()
+        checksum_text = checksum.decode("ascii")
     except UnicodeDecodeError as error:
-        raise ReleaseError("The checksum file must contain ASCII text") from error
-    match = re.fullmatch(r"([0-9a-f]{64})  (.+)", checksum_text)
-    if not match or match[2] != context.archive_name:
-        raise ReleaseError("The checksum must name the expected release archive")
-    if hashlib.sha256(archive).hexdigest() != match[1]:
-        raise ReleaseError("The release archive checksum does not match")
-    try:
-        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-            for name in bundle.namelist():
-                path = PurePosixPath(name)
-                if path.is_absolute() or ".." in path.parts:
-                    raise ReleaseError("The release ZIP contains an unsafe path")
-            plist_name = "Luma Luma.app/Contents/Info.plist"
-            if bundle.getinfo(plist_name).file_size > 1024 * 1024:
-                raise ReleaseError("The app property list is unexpectedly large")
-            info = plistlib.loads(bundle.read(plist_name))
-            if not isinstance(info, dict):
-                raise ReleaseError("The app property list must contain a dictionary")
-            expected = {
-                "CFBundleIdentifier": "dev.illyes.lumaluma",
-                "CFBundleShortVersionString": context.version,
-                "CFBundleVersion": context.run_number,
-            }
-            if any(info.get(key) != value for key, value in expected.items()):
-                raise ReleaseError("The app version or bundle identity does not match this release")
-            for path in (
-                "Contents/MacOS/LumaLuma", "Contents/Helpers/LumaLumaGammaHelper",
-                "Contents/Resources/LICENSE", "Contents/Resources/LumaLuma.icns",
-            ):
-                bundle.getinfo(f"Luma Luma.app/{path}")
-            if bundle.testzip() is not None:
-                raise ReleaseError("The release ZIP contains a corrupt entry")
-    except (zipfile.BadZipFile, KeyError, plistlib.InvalidFileException, ValueError) as error:
-        raise ReleaseError("The release ZIP or app property list is invalid") from error
+        raise ReleaseError(f"The checksum for {name} must contain ASCII text") from error
+    match = re.fullmatch(r"([0-9a-f]{64})  ([^\r\n]+)(?:\r?\n)?", checksum_text)
+    if not match or match[2] != name:
+        raise ReleaseError(f"The checksum must name {name}")
+    if hashlib.sha256(image).hexdigest() != match[1]:
+        raise ReleaseError(f"The checksum for {name} does not match")
     return match[1]
 
 
+def verify_disk_image(path, version, build_number, architecture):
+    verifier = Path(__file__).resolve().with_name("verify-dmg.sh")
+    try:
+        subprocess.run([str(verifier), str(path.resolve()), version, build_number, architecture], check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ReleaseError(f"Disk image verification failed for {path.name}") from error
+
+
 class ReleasePublisher:
-    def __init__(self, context, github):
+    def __init__(self, context, github, image_verifier=verify_disk_image):
         self.context = context
         self.github = github
+        self.image_verifier = image_verifier
         self.endpoint = github.prefix
         self.release_id = None
 
@@ -270,28 +252,51 @@ class ReleasePublisher:
         self.release_id = release["id"]
         return release
 
+    def _verify_checksums(self, contents):
+        return {
+            name: verify_checksum(name, contents[name], contents[f"{name}.sha256"])
+            for name in self.context.disk_images.values()
+        }
+
+    def _verify_images(self, paths):
+        for architecture, name in self.context.disk_images.items():
+            self.image_verifier(paths[name], self.context.version, self.context.run_number, architecture)
+
     def _verify_remote(self, release, expected=None):
         assets = self._asset_map(release)
-        if set(assets) != set(self.context.asset_names):
-            raise ReleaseError("The release is missing an archive or checksum asset")
+        missing = set(self.context.asset_names) - assets.keys()
+        if missing:
+            raise ReleaseError(f"The release is missing {', '.join(sorted(missing))}")
         downloaded = {}
         for name, asset in assets.items():
             if asset.get("state") != "uploaded" or asset.get("size", 0) <= 0:
-                raise ReleaseError("A release asset has not finished uploading")
+                raise ReleaseError(f"{name} has not finished uploading")
             contents = self.github.download(asset["id"])
             if len(contents) != asset["size"]:
-                raise ReleaseError("A release asset has an unexpected size")
-            if expected is not None and contents != expected[name]:
-                raise ReleaseError("The uploaded release asset differs from the local artifact")
-            downloaded[name] = contents
-        return verify_archive(self.context, *(downloaded[name] for name in self.context.asset_names))
+                raise ReleaseError(f"{name} has an unexpected size")
+            if expected is None:
+                downloaded[name] = contents
+            elif contents != expected[name]:
+                raise ReleaseError(f"The uploaded {name} differs from the local artifact")
+        if expected is not None:
+            # The uploaded bytes matched the images and checksums already verified locally.
+            return
+        digests = self._verify_checksums(downloaded)
+        try:
+            with tempfile.TemporaryDirectory(prefix="lumaluma-release-") as directory:
+                paths = {name: Path(directory) / name for name in self.context.disk_images.values()}
+                for name, path in paths.items():
+                    path.write_bytes(downloaded[name])
+                self._verify_images(paths)
+        except OSError as error:
+            raise ReleaseError("Could not stage the downloaded disk images for verification") from error
+        return digests
 
     def prepare(self):
         release = self._load_release(allow_hidden_release=True)
         published = release is not None and not release["draft"]
-        if published:
-            self._verify_remote(release)
-        self._outputs(published)
+        digests = self._verify_remote(release) if published else None
+        self._outputs(published, digests)
         return published
 
     def _notes(self):
@@ -302,16 +307,16 @@ class ReleasePublisher:
             "Make your compatible MacBook display brighter, even when macOS brightness "
             "is already at 100%. Luma Luma uses available HDR headroom and supports "
             "the MacBook brightness keys.\n\n"
-            "Download the universal ZIP for macOS 14 or newer. It contains the app and "
-            "display helper for Apple silicon and Intel Macs.\n\n"
-            "Extract the ZIP, move **Luma Luma.app** to **Applications**, and open it. "
+            "For macOS 14 or newer, download the `arm64` disk image for Apple silicon "
+            "or the `x86_64` disk image for Intel.\n\n"
+            "Open the disk image, drag **Luma Luma.app** into **Applications**, and open the app. "
             "This build uses ad-hoc signing. macOS may require approval in "
             "**System Settings → Privacy & Security** on first launch. "
             "Enable Accessibility access in the app's shortcut settings to use the brightness keys.\n\n"
             f"[User guide](https://github.com/{context.repository}/blob/{context.commit}/docs/USAGE.md) "
             f"· [Source commit](https://github.com/{context.repository}/commit/{context.commit}) "
             f"· [Build run](https://github.com/{context.repository}/actions/runs/{context.run_id})\n\n"
-            "The accompanying `.sha256` file verifies the ZIP download.\n\n"
+            "Use the corresponding `.dmg.sha256` file to verify the disk image download.\n\n"
             f"<!-- lumaluma-release {marker} -->\n"
         )
 
@@ -327,16 +332,19 @@ class ReleasePublisher:
     def publish(self, assets_dir):
         release = self._load_release()
         if release is not None and not release["draft"]:
-            digest = self._verify_remote(release)
-            self._outputs(True, digest)
+            digests = self._verify_remote(release)
+            self._outputs(True, digests)
             return self.context.url
 
         paths = {name: Path(assets_dir) / name for name in self.context.asset_names}
-        try:
-            contents = {name: path.read_bytes() for name, path in paths.items()}
-        except OSError as error:
-            raise ReleaseError("The local release archive or checksum is missing") from error
-        digest = verify_archive(self.context, *(contents[name] for name in self.context.asset_names))
+        contents = {}
+        for name, path in paths.items():
+            try:
+                contents[name] = path.read_bytes()
+            except OSError as error:
+                raise ReleaseError(f"Could not read the local release asset {name}") from error
+        digests = self._verify_checksums(contents)
+        self._verify_images(paths)
         if release is None:
             release = self.github.api("POST", f"{self.endpoint}/releases", {
                 "tag_name": self.context.tag, "target_commitish": self.context.commit,
@@ -368,10 +376,10 @@ class ReleasePublisher:
         if published is None or published["draft"]:
             raise ReleaseError("GitHub did not publish the release")
         self._verify_remote(published, contents)
-        self._outputs(True, digest)
+        self._outputs(True, digests)
         return self.context.url
 
-    def _outputs(self, published, digest=None):
+    def _outputs(self, published, digests=None):
         context = self.context
         values = {
             "version": context.version, "build_number": context.run_number,
@@ -388,8 +396,9 @@ class ReleasePublisher:
                 with open(summary, "a", encoding="utf-8") as file:
                     file.write(f"## Luma Luma {context.version}\n\n[Download release]({context.url})\n\n")
                     file.write(f"Commit `{context.commit}`\n\n")
-                    if digest:
-                        file.write(f"SHA-256 `{digest}`\n")
+                    if digests:
+                        for name, digest in digests.items():
+                            file.write(f"- `{name}` · SHA-256 `{digest}`\n")
         else:
             print(f"Preparing Luma Luma {context.version}")
 

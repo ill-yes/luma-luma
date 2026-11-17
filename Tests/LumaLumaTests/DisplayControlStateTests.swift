@@ -12,6 +12,8 @@ struct DisplayControlStateTests {
         cancelledRestorationCannotCompleteReplacementRequest()
         switchedDisplayIgnoresPreviousRestoration()
         addingBoostOnAnotherDisplayPreservesExistingTargets()
+        identifiedBoostSurvivesDisplayReassignment()
+        disconnectedBoostOverridesLastOnlyForTheirConnection()
         try profilesRoundTripWithIndependentOverrides()
         profileValidationPreservesInheritance()
         displayGroupsMatchTheirCoverage()
@@ -133,17 +135,45 @@ struct DisplayControlStateTests {
     }
 
     private static func addingBoostOnAnotherDisplayPreservesExistingTargets() {
-        var session = DisplayBoostSession(singleDisplay: 1)
-        precondition(session.strength(for: 1, saved: 0.75) == 0.75)
-        precondition(session.strength(for: 2, saved: 0.65) == 0)
+        let first = DisplayBoostKey.persistent(UUID())
+        let second = DisplayBoostKey.persistent(UUID())
+        let third = DisplayBoostKey.connection(3)
+        var session = DisplayBoostSession(singleDisplay: first)
+        precondition(session.strength(for: first, saved: 0.75) == 0.75)
+        precondition(session.strength(for: second, saved: 0.65) == 0)
 
         // The selected display can join a single-display session via a shortcut or slider.
-        let newStrength = session.strength(for: 2, saved: 0.65) + 1.0 / 16
-        session.include(2, among: [1, 2, 3])
-        session.levels[2] = nil
-        precondition(session.strength(for: 2, saved: newStrength) == 1.0 / 16)
-        precondition(session.strength(for: 1, saved: 0.75) == 0.75)
-        precondition(session.strength(for: 3, saved: 0.65) == 0)
+        let newStrength = session.strength(for: second, saved: 0.65) + 1.0 / 16
+        session.include(second, among: [first, second, third])
+        session.levels[second] = nil
+        precondition(session.strength(for: second, saved: newStrength) == 1.0 / 16)
+        precondition(session.strength(for: first, saved: 0.75) == 0.75)
+        precondition(session.strength(for: third, saved: 0.65) == 0)
+    }
+
+    private static func identifiedBoostSurvivesDisplayReassignment() {
+        let target = DisplayBoostKey.persistent(UUID())
+        let replacement = DisplayBoostKey.persistent(UUID())
+        var screens = [UInt32(1): target]
+        var session = DisplayBoostSession(singleDisplay: screens[1], levels: [target: 0.25])
+        precondition(!session.removeDisconnectedConnections(keeping: []))
+        precondition(session.singleDisplay == target && session.levels[target] == 0.25)
+
+        screens = [1: replacement, 2: target]
+        precondition(!session.removeDisconnectedConnections(keeping: Set(screens.values)))
+        precondition(session.strength(for: screens[1]!, saved: 0.75) == 0)
+        precondition(session.strength(for: screens[2]!, saved: 0.75) == 0.25)
+    }
+
+    private static func disconnectedBoostOverridesLastOnlyForTheirConnection() {
+        let target = DisplayBoostKey.connection(1)
+        let persistent = DisplayBoostKey.persistent(UUID())
+        var session = DisplayBoostSession(singleDisplay: target, levels: [target: 0.5, persistent: 0])
+        precondition(!session.removeDisconnectedConnections(keeping: [target]))
+        precondition(session.levels[target] == 0.5)
+        precondition(session.removeDisconnectedConnections(keeping: []))
+        precondition(session.singleDisplay == target)
+        precondition(session.levels == [persistent: 0])
     }
 
     private static func profileValidationPreservesInheritance() {

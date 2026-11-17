@@ -43,7 +43,6 @@ final class Preferences: ObservableObject {
     @Published var ringStrength: Double { didSet { defaults.set(ringStrength, forKey: "ringStrength") } }
     @Published var ringWidth: Double { didSet { defaults.set(ringWidth, forKey: "ringWidth") } }
     @Published var ringWarmth: Double { didSet { defaults.set(ringWarmth, forKey: "ringWarmth") } }
-    @Published var startEnabled: Bool { didSet { defaults.set(startEnabled, forKey: "startEnabled") } }
     @Published var showDockIcon: Bool { didSet { defaults.set(showDockIcon, forKey: "showDockIcon") } }
     @Published var powerRule: PowerRule { didSet { defaults.set(powerRule.rawValue, forKey: "powerRule") } }
     @Published var batteryThreshold: Int { didSet { defaults.set(batteryThreshold, forKey: "batteryThreshold") } }
@@ -75,6 +74,11 @@ final class Preferences: ObservableObject {
             defaults.set(data, forKey: "shortcuts")
         }
     }
+    var manualLighting: StoredManualLighting {
+        didSet {
+            if oldValue != manualLighting { manualLighting.save(to: defaults) }
+        }
+    }
 
     private let defaults: UserDefaults
 
@@ -87,7 +91,7 @@ final class Preferences: ObservableObject {
         ringStrength = Self.readLevel(from: defaults, key: "ringStrength", fallback: 0.55, maximum: 1)
         ringWidth = Self.readLevel(from: defaults, key: "ringWidth", fallback: 0.45, maximum: 1)
         ringWarmth = Self.readLevel(from: defaults, key: "ringWarmth", fallback: 0.25, maximum: 1)
-        startEnabled = defaults.bool(forKey: "startEnabled")
+        manualLighting = StoredManualLighting.load(from: defaults)
         showDockIcon = defaults.bool(forKey: "showDockIcon")
         powerRule = defaults.string(forKey: "powerRule").flatMap(PowerRule.init(rawValue:)) ?? .manual
         batteryThreshold = min(100, max(1, defaults.object(forKey: "batteryThreshold") as? Int ?? 40))

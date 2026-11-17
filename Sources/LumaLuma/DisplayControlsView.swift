@@ -236,7 +236,6 @@ struct PreferencesView: View {
                     get: { controller.loginEnabled },
                     set: { controller.setLoginEnabled($0) }
                 ))
-                Toggle("Turn on boost when Luma Luma opens", isOn: $preferences.startEnabled)
                 Toggle("Show icon in Dock", isOn: $preferences.showDockIcon)
             }
 

@@ -2,54 +2,35 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-if [[ $# != 2 || ! "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || ! "$2" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Usage: $0 VERSION BUILD_NUMBER" >&2
+if [[ $# -lt 3 || $# -gt 4 || ! "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ||
+      ! "$2" =~ ^[1-9][0-9]*$ || ( "$3" != arm64 && "$3" != x86_64 ) ]]; then
+    echo "Usage: $0 VERSION BUILD_NUMBER ARCH [FILE_STEM]" >&2
     exit 2
 fi
 version="$1"
 build_number="$2"
-LUMA_APP_VERSION="$version" LUMA_BUILD_NUMBER="$build_number" ./scripts/build-app.sh release universal
+architecture="$3"
+file_stem="${4-LumaLuma-$version-macos-$architecture}"
+if [[ ! "$file_stem" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$file_stem" == *.dmg ]]; then
+    echo "FILE_STEM must be a plain filename without the .dmg extension" >&2
+    exit 2
+fi
 
-verify_bundle() {
-    local bundle="$1"
-    local plist="$bundle/Contents/Info.plist"
-    local binary target minimum architectures
-    [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" == "$version" ]]
-    [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" == "$build_number" ]]
-    [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == dev.illyes.lumaluma ]]
-    [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" == 14.0 ]]
-    cmp LICENSE "$bundle/Contents/Resources/LICENSE"
-    cmp Packaging/LumaLuma.icns "$bundle/Contents/Resources/LumaLuma.icns"
-    codesign --verify --deep --all-architectures --strict "$bundle"
-    for binary in "$bundle/Contents/MacOS/LumaLuma" "$bundle/Contents/Helpers/LumaLumaGammaHelper"; do
-        architectures=" $(xcrun lipo -archs "$binary") "
-        if [[ "$architectures" != *" arm64 "* || "$architectures" != *" x86_64 "* ]]; then
-            echo "Missing Universal architecture in ${binary##*/}:$architectures" >&2
-            return 1
-        fi
-        for target in arm64 x86_64; do
-            minimum="$(xcrun vtool -arch "$target" -show-build "$binary" | awk '$1 == "minos" { print $2 }')"
-            if [[ "$minimum" != 14.0 ]]; then
-                echo "Unexpected deployment target for ${binary##*/} ($target): $minimum" >&2
-                return 1
-            fi
-        done
-    done
-}
-
-app="$(pwd)/dist/Luma Luma.app"
-verify_bundle "$app"
-staging_dir="$(mktemp -d "$(pwd)/dist/.release-XXXXXX")"
+output_dir="$(pwd)/dist"
+mkdir -p "$output_dir"
+staging_dir="$(mktemp -d "$output_dir/.release-XXXXXX")"
 trap 'rm -rf -- "$staging_dir"' EXIT
-archive="LumaLuma-$version-macos-universal.zip"
-ditto -c -k --sequesterRsrc --keepParent "$app" "$staging_dir/$archive"
+payload="$staging_dir/payload"
+LUMA_APP_VERSION="$version" LUMA_BUILD_NUMBER="$build_number" LUMA_APP_OUTPUT_DIR="$payload" \
+    ./scripts/build-app.sh release "$architecture"
+ln -s /Applications "$payload/Applications"
+
+image="$file_stem.dmg"
+hdiutil create -quiet -format UDZO -fs HFS+ -volname "Luma Luma" -srcfolder "$payload" "$staging_dir/$image"
+./scripts/verify-dmg.sh "$staging_dir/$image" "$version" "$build_number" "$architecture"
 (
     cd "$staging_dir"
-    shasum -a 256 "$archive" > "$archive.sha256"
+    shasum -a 256 "$image" > "$image.sha256"
 )
-ditto -x -k "$staging_dir/$archive" "$staging_dir/unpacked"
-verify_bundle "$staging_dir/unpacked/Luma Luma.app"
-diff -r "$app" "$staging_dir/unpacked/Luma Luma.app"
-mv "$staging_dir/$archive" "dist/$archive"
-mv "$staging_dir/$archive.sha256" "dist/$archive.sha256"
-printf '%s\n' "$(pwd)/dist/$archive" "$(pwd)/dist/$archive.sha256"
+mv "$staging_dir/$image" "$staging_dir/$image.sha256" "$output_dir/"
+printf '%s\n' "$output_dir/$image" "$output_dir/$image.sha256"

@@ -91,6 +91,7 @@ final class GammaBoostSession {
     ) -> GammaBoostStatus {
         if attempt?.displayID != displayID {
             stop()
+            guard !isRestoring else { return .starting }
             attempt = Attempt(displayID: displayID)
             begin()
         }
@@ -200,7 +201,7 @@ final class GammaBoostSession {
                 attempt?.inFlight = false
                 switch result {
                 case .waiting:
-                    // The display poll retries while the other helper holds the lock.
+                    // The display poll retries while the lock or display is unavailable.
                     return
                 case .acquired:
                     attempt?.acquired = true
@@ -361,7 +362,8 @@ private final class GammaHelperTransport: @unchecked Sendable {
                     connection.close()
                     self.retiring = Retirement(process: connection.process, reply: nil)
                     self.finishRetirement(of: connection.process)
-                    completion(reply == .busy ? .waiting : .rejected(reply.boostStatus))
+                    let shouldRetry = reply == .busy || reply == .unsupported
+                    completion(shouldRetry ? .waiting : .rejected(reply.boostStatus))
                 }
             } catch {
                 completion(.rejected(.failed))

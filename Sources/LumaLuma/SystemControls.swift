@@ -80,6 +80,11 @@ struct ConnectedDisplay {
     let screen: NSScreen
     let identity: UUID?
 
+    var boostKey: DisplayBoostKey {
+        if let identity { return .persistent(identity) }
+        return .connection(id)
+    }
+
     var builtIn: Bool { CGDisplayIsBuiltin(id) != 0 }
     var supportsHDR: Bool { screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1 }
     var choice: DisplayControlChoice { .init(id: id, name: screen.localizedName) }

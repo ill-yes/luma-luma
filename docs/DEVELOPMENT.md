@@ -26,7 +26,12 @@ For a debug app bundle, use
 
 ## 📦 Build and packaging
 
-The build script compiles the app and helper for the host architecture. It packages the icon and MIT License, validates the property list, and applies local ad-hoc signatures. The output is `dist/Luma Luma.app`.
+The build script compiles the app and helper for the host architecture by default. It packages the icon and MIT License, validates the property list, and applies local ad-hoc signatures. The output is `dist/Luma Luma.app`. Pass `arm64` or `x86_64` to build for one architecture explicitly.
+
+```sh
+./scripts/build-app.sh release arm64
+./scripts/build-app.sh release x86_64
+```
 
 For a Universal app containing both `arm64` and `x86_64` code, run
 
@@ -34,13 +39,16 @@ For a Universal app containing both `arm64` and `x86_64` code, run
 ./scripts/build-app.sh release universal
 ```
 
-Both the app and gamma helper are built for each architecture, then merged with `lipo`. Optional `LUMA_APP_VERSION` and `LUMA_BUILD_NUMBER` values set the packaged app's version. For example, to build and validate a versioned Universal ZIP and its SHA-256 checksum, run
+Both the app and gamma helper are built for each architecture, then merged with `lipo`. Optional `LUMA_APP_VERSION` and `LUMA_BUILD_NUMBER` values set the packaged app's version.
+
+`./scripts/package-release.sh VERSION BUILD_NUMBER ARCH [FILE_STEM]` builds a release disk image and writes its SHA-256 sidecar. Run it once per architecture to build both downloads.
 
 ```sh
-./scripts/package-release.sh 1.0.0 3
+./scripts/package-release.sh 1.0.0 3 arm64
+./scripts/package-release.sh 1.0.0 3 x86_64
 ```
 
-This produces `dist/LumaLuma-1.0.0-macos-universal.zip` and `dist/LumaLuma-1.0.0-macos-universal.zip.sha256`. Packaging checks the two architectures, macOS 14 deployment target, version fields, signatures, bundled license and icon. It also unpacks the ZIP and verifies the resulting app.
+By default, the output is `dist/LumaLuma-<version>-macos-<arch>.dmg` with a matching `.dmg.sha256` file. Packaging mounts the disk image to verify the architecture, macOS 14 deployment target, version fields, signatures, bundled license and icon in the app.
 
 Release packaging strips linker debug metadata from both executables before signing. It then scans the executable bytes for the checkout path and private home, volume and temporary-directory paths. A match or scan error fails the build before the staged bundle is installed. Debug builds retain their symbols for local debugging.
 
@@ -125,7 +133,7 @@ Turning Boost off, sleeping, locking and quitting release the session. Pipe disc
 
 `./scripts/test-hdr.sh` compiles the standalone test executables with warnings treated as errors. It runs each suite and removes its temporary test directory. Review the suite coverage and measured hardware results. [Validation](VALIDATION.md)
 
-The **Build and test** GitHub Actions workflow runs the tests and release bundle build on `macos-15` for pushes to `main` and pull requests. It uses read-only repository access, compares the bundled license and verifies the app signature. The first hosted run passed at commit `b26d61d`. [CI result](https://github.com/ill-yes/luma-luma/actions/runs/43431125097)
+The **Build and test** GitHub Actions workflow runs tests and build checks on macOS for pushes to `main`, pull requests and manual runs. Main pushes and manual runs upload each `LumaLuma-ci-<shortsha>-macos-<arch>.dmg` and its `.dmg.sha256` as separate, directly downloadable artifacts. To try a snapshot, open the newest successful `main` run and choose the two matching files under **Artifacts**. Artifacts expire according to the repository's retention settings. For a manual build, select the ref in **Actions → Build and test → Run workflow**. [Build and test runs](https://github.com/ill-yes/luma-luma/actions/workflows/ci.yml)
 
 ### Manual releases
 
@@ -133,9 +141,9 @@ Open **Actions → Release LumaLuma → Run workflow** and select the ref to bui
 
 Workflow runs 1 and 2 use versions `0.1.1` and `0.1.2`. Run 3 uses `1.0.0`. Later runs use `1.0.<github.run_number − 3>`. The build number remains `github.run_number`. A re-run keeps its original version. Failed runs can leave gaps. The shared release concurrency group processes runs one at a time and can queue up to 100 waiting runs.
 
-The build job runs the tests and creates the Universal ZIP and checksum. Only the publishing job receives `contents: write`. It uploads and verifies both files in a draft before publishing the release. A re-run resumes its own draft or verifies its already published release. Version and commit conflicts fail with an error. The highest published version is designated **Latest**.
+The build and publishing jobs run on macOS. The build job tests the app and mounts the `arm64` and `x86_64` disk images to validate them. The publishing job downloads both images and their checksums by the four artifact IDs and validates them again. Only the publishing job receives `contents: write`. It uploads the four files to a draft and verifies the uploaded bytes before publishing. A re-run resumes its own draft or verifies its already published release. Version and commit conflicts fail with an error. The highest published version is designated **Latest**.
 
-Intermediate build artifacts are retained for seven days. To retry a failed publication after they expire, choose **Re-run all jobs** to rebuild the download for the same version.
+Intermediate release artifacts are retained for seven days. To retry a failed publication after they expire, choose **Re-run all jobs** to rebuild the downloads for the same version.
 
 GitHub requires additional workflow permissions when the release commit changes files under `.github/workflows/` relative to the current default branch. The built-in `GITHUB_TOKEN` cannot receive that permission. If such a release write fails with HTTP 403 or 404, start a new release from a ref whose workflow files match the default branch, or have a maintainer complete the release with the required workflow access. [GitHub release permissions](https://docs.github.com/en/rest/releases/releases#create-a-release)
 

@@ -44,12 +44,14 @@ Luma Luma shows when HDR is preparing, active or unavailable. [Display compatibi
 
 ### Download and install
 
-Download the latest `LumaLuma-<version>-macos-universal.zip` and its `.sha256`
-file from the release page. The Universal app supports Apple Silicon and Intel
-Macs. [Download Luma Luma](https://github.com/ill-yes/luma-luma/releases/latest)
+Download the DMG and its matching `.dmg.sha256` file from the release page.
+Choose `macos-arm64.dmg` for Apple silicon or `macos-x86_64.dmg` for Intel.
+[Download Luma Luma](https://github.com/ill-yes/luma-luma/releases/latest)
 
-Expand the ZIP, move **Luma Luma.app** to **Applications** and open it. Releases use
-ad-hoc signing. macOS may require explicit approval on first launch. [Installation and updates](docs/USAGE.md#-installation-and-updates)
+Open the DMG, drag **Luma Luma.app** to **Applications** and open the installed
+copy. Releases use ad-hoc signing. macOS may require explicit approval on first
+launch. Older releases provide a Universal ZIP for both architectures.
+[Installation and updates](docs/USAGE.md#-installation-and-updates)
 
 ### Build and launch
 
@@ -101,9 +103,12 @@ Run the automated checks with
 ./scripts/test-hdr.sh
 ```
 
-The macOS CI workflow runs the same checks and builds the app. Local build outputs
-and temporary test data belong in the ignored `.build/` and `dist/` directories.
-[Developer guide](docs/DEVELOPMENT.md)
+The macOS CI workflow runs the same checks and builds the app. To try a development
+snapshot, open the newest successful `main` run and download the DMG and checksum
+for your Mac from **Artifacts**. [Build and test runs](https://github.com/ill-yes/luma-luma/actions/workflows/ci.yml)
+
+Local build outputs and temporary test data belong in the ignored `.build/` and
+`dist/` directories. [Developer guide](docs/DEVELOPMENT.md)
 
 ## ☕ Support Luma Luma
 
