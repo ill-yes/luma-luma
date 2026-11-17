@@ -1,0 +1,114 @@
+name: Build disk image
+
+on:
+  workflow_call:
+    inputs:
+      architecture:
+        required: true
+        type: string
+      upload_artifacts:
+        default: false
+        type: boolean
+      release_version:
+        default: ''
+        type: string
+    outputs:
+      image_artifact_id:
+        description: Artifact ID of the disk image
+        value: ${{ jobs.build.outputs.image_artifact_id }}
+      checksum_artifact_id:
+        description: Artifact ID of the disk image checksum
+        value: ${{ jobs.build.outputs.checksum_artifact_id }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and package
+    runs-on: ${{ inputs.architecture == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    timeout-minutes: 15
+    outputs:
+      image_artifact_id: ${{ steps.image.outputs.artifact-id }}
+      checksum_artifact_id: ${{ steps.checksum.outputs.artifact-id }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Show toolchain
+        id: toolchain
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+        run: |
+          if [[ "$(uname -m)" != "$ARCHITECTURE" ]]; then
+            echo "::error::The runner does not match the requested architecture."
+            exit 1
+          fi
+          sw_vers
+          toolchain="$(swift --version)"
+          printf '%s\n' "$toolchain"
+          printf 'swift=%s\n' "${toolchain%%$'\n'*}" >> "$GITHUB_OUTPUT"
+      - name: Test release publication
+        run: python3 -m unittest discover -s Tests/ReleaseTests -v
+      - name: Run display tests
+        run: ./scripts/test-hdr.sh
+      - name: Build and verify disk image
+        id: package
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [[ -n "$RELEASE_VERSION" ]]; then
+            version="$RELEASE_VERSION"
+            stem="LumaLuma-$version-macos-$ARCHITECTURE"
+          else
+            version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packaging/Info.plist)"
+            stem="LumaLuma-ci-${GITHUB_SHA:0:7}-macos-$ARCHITECTURE"
+          fi
+          ./scripts/package-release.sh "$version" "$GITHUB_RUN_NUMBER" "$ARCHITECTURE" "$stem"
+          printf 'version=%s\nfilename=%s.dmg\n' "$version" "$stem" >> "$GITHUB_OUTPUT"
+      - name: Upload disk image
+        id: image
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.filename }}
+          path: dist/${{ steps.package.outputs.filename }}
+          archive: false
+          overwrite: true
+          if-no-files-found: error
+          retention-days: ${{ inputs.release_version != '' && 30 || 0 }}
+      - name: Upload disk image checksum
+        id: checksum
+        if: inputs.upload_artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.filename }}.sha256
+          path: dist/${{ steps.package.outputs.filename }}.sha256
+          archive: false
+          overwrite: true
+          if-no-files-found: error
+          retention-days: ${{ inputs.release_version != '' && 30 || 0 }}
+      - name: Summarize CI build
+        if: inputs.release_version == ''
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          VERSION: ${{ steps.package.outputs.version }}
+          SWIFT_VERSION: ${{ steps.toolchain.outputs.swift }}
+          IMAGE: ${{ steps.package.outputs.filename }}
+          IMAGE_URL: ${{ steps.image.outputs.artifact-url }}
+          CHECKSUM_URL: ${{ steps.checksum.outputs.artifact-url }}
+        run: |
+          digest="$(cut -d ' ' -f 1 "dist/$IMAGE.sha256")"
+          {
+            printf '### Luma Luma %s (%s)\n\n' "$VERSION" "$ARCHITECTURE"
+            printf 'Commit `%s` · Build `%s`\n\n' "$GITHUB_SHA" "$GITHUB_RUN_NUMBER"
+            printf 'Toolchain `%s`\n\n' "$SWIFT_VERSION"
+            printf 'Tests passed and the mounted disk image was verified.\n\n'
+            if [[ -n "$IMAGE_URL" && -n "$CHECKSUM_URL" ]]; then
+              printf '[%s](%s) · [%s.sha256](%s)\n\n' "$IMAGE" "$IMAGE_URL" "$IMAGE" "$CHECKSUM_URL"
+            fi
+            printf 'SHA-256 `%s`\n' "$digest"
+          } >> "$GITHUB_STEP_SUMMARY"

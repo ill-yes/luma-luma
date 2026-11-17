@@ -133,19 +133,25 @@ Turning Boost off, sleeping, locking and quitting release the session. Pipe disc
 
 `./scripts/test-hdr.sh` compiles the standalone test executables with warnings treated as errors. It runs each suite and removes its temporary test directory. Review the suite coverage and measured hardware results. [Validation](VALIDATION.md)
 
-The **Build and test** GitHub Actions workflow runs tests and build checks on macOS for pushes to `main`, pull requests and manual runs. Main pushes and manual runs upload each `LumaLuma-ci-<shortsha>-macos-<arch>.dmg` and its `.dmg.sha256` as separate, directly downloadable artifacts. To try a snapshot, open the newest successful `main` run and choose the two matching files under **Artifacts**. Artifacts expire according to the repository's retention settings. For a manual build, select the ref in **Actions → Build and test → Run workflow**. [Build and test runs](https://github.com/ill-yes/luma-luma/actions/workflows/ci.yml)
+The **Build and test** GitHub Actions workflow runs the shared build on native Apple silicon and Intel runners for pushes to `main`, pull requests and manual runs. Main pushes and manual runs upload each `LumaLuma-ci-<shortsha>-macos-<arch>.dmg` and its `.dmg.sha256` as separate, directly downloadable artifacts. Each snapshot is identified by its source commit and GitHub build number. To try a snapshot, open the newest successful `main` run and choose the two matching files under **Artifacts**. Artifacts expire according to the repository's retention settings. For a manual build, select the ref in **Actions → Build and test → Run workflow**. [Build and test runs](https://github.com/ill-yes/luma-luma/actions/workflows/ci.yml)
 
 ### Manual releases
 
-Open **Actions → Release LumaLuma → Run workflow** and select the ref to build. The default is `main`; the workflow builds the commit fixed at dispatch time. The workflow definition is `.github/workflows/release.yml`.
+Open **Actions → Release LumaLuma → Run workflow**, select `main`, then choose `patch`, `minor` or `major`. The same options are available from GitHub CLI.
 
-Workflow runs 1 and 2 use versions `0.1.1` and `0.1.2`. Run 3 uses `1.0.0`. Later runs use `1.0.<github.run_number − 3>`. The build number remains `github.run_number`. A re-run keeps its original version. Failed runs can leave gaps. The shared release concurrency group processes runs one at a time and can queue up to 100 waiting runs.
+```sh
+gh workflow run release.yml --ref main -f bump=minor
+```
 
-The build and publishing jobs run on macOS. The build job tests the app and mounts the `arm64` and `x86_64` disk images to validate them. The publishing job downloads both images and their checksums by the four artifact IDs and validates them again. Only the publishing job receives `contents: write`. It uploads the four files to a draft and verifies the uploaded bytes before publishing. A re-run resumes its own draft or verifies its already published release. Version and commit conflicts fail with an error. The highest published version is designated **Latest**.
+`patch` is the default. Starting from `v1.0.5`, the three choices produce `v1.0.6`, `v1.1.0` and `v2.0.0`, respectively. The base is the highest published stable version by numeric order. The source commit is fixed when the run starts and must descend from the latest stable release. A run for a commit that already has a stable release links to that release. `github.run_number` supplies the bundle build number. Release runs use a shared queue that processes them one at a time.
 
-Intermediate release artifacts are retained for seven days. To retry a failed publication after they expire, choose **Re-run all jobs** to rebuild the downloads for the same version.
+Preparation stores the version and base tag for the run in its `release-plan.json` artifact. A re-run uses the stored version. A published run can also be identified by its release marker. If a saved version is superseded before publication, start a new run to choose a version from the current release history. If a conflicting draft belongs to another run, use the owning run to resume it. Historical runs use their original workflow and release format.
 
-GitHub requires additional workflow permissions when the release commit changes files under `.github/workflows/` relative to the current default branch. The built-in `GITHUB_TOKEN` cannot receive that permission. If such a release write fails with HTTP 403 or 404, start a new release from a ref whose workflow files match the default branch, or have a maintainer complete the release with the required workflow access. [GitHub release permissions](https://docs.github.com/en/rest/releases/releases#create-a-release)
+The release runs the shared native build for each architecture. The macOS publishing job is the only job with `contents: write`. It first checks for an existing release, then downloads the four artifacts by ID, verifies the disk images, resumes or creates its draft and compares the uploaded bytes before publishing. Notes include installation instructions, the source commit and changes since the planned base tag. The new stable release is marked **Latest**.
+
+Intermediate disk images are retained for 30 days. If an artifact has been removed, choose **Re-run all jobs** to rebuild the downloads from the stored plan. If the plan is also unavailable, the workflow reports that a fresh dispatch is needed. A fully published run can verify its files directly from the release.
+
+GitHub requires additional workflow permissions when the pinned release commit changes files under `.github/workflows/` relative to the current `main`. If a release write fails with HTTP 403 or 404 for this reason, start a new release from the current `main`, or have a maintainer review the draft with the required workflow access. [GitHub release permissions](https://docs.github.com/en/rest/releases/releases#create-a-release)
 
 Release checks can be run locally with
 
