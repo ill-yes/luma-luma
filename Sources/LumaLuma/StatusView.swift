@@ -11,8 +11,6 @@ struct StatusView: View {
         switch controller.report?.gammaRestorationStatus {
         case .restorationFailed:
             return "Could not restore the display curve"
-        case .conflict:
-            return "Display curve changed by another app"
         default:
             break
         }
@@ -123,6 +121,7 @@ struct StatusView: View {
                     }
                 }
                 effectControls.id(controller.selectedDisplayID)
+                    .id(controller.selectedDisplayKey)
             }
 
             Divider()
@@ -157,15 +156,18 @@ struct StatusView: View {
         case .boost:
             if let control = controller.brightnessControl {
                 let displayID = controller.selectedDisplayID
+                let displayKey = controller.selectedDisplayKey
                 DisplayBrightnessSlider(control: control, value: Binding(
                     get: { controller.brightnessControl?.value ?? control.value },
                     set: {
                         guard controller.selectedDisplayID == displayID,
+                              controller.selectedDisplayKey == displayKey,
                               controller.brightnessControl?.mode == control.mode else { return }
                         controller.setBrightnessControl($0)
                     }
                 ), isHDRRangeAvailable: {
                     controller.selectedDisplayID == displayID &&
+                        controller.selectedDisplayKey == displayKey &&
                         controller.brightnessControl?.showsHDRRange == true
                 })
                 if control.mode != .native {
@@ -232,13 +234,6 @@ struct PreferencesHost: View {
                 controller: controller,
                 preferences: controller.preferences
             )
-            if let loginMessage = controller.loginMessage {
-                Text(loginMessage)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 15)
-            }
             Text(AppVersion.label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -251,11 +246,14 @@ struct PreferencesHost: View {
     }
 }
 
-private enum AppVersion {
+enum AppVersion {
     static let label: String = {
         guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
               !version.isEmpty else {
             return "Development build"
+        }
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String, !build.isEmpty {
+            return "Version \(version) · Build \(build)"
         }
         return "Version \(version)"
     }()

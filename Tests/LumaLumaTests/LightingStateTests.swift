@@ -10,6 +10,7 @@ struct LightingStateTests {
         reenablingBoostUsesSavedStrength()
         keyboardStartsBoostFromDisabled()
         rapidOffOnProducesDistinctTransitions()
+        automationTransitionsRestoreManualIntent()
         legacyStartupPreferenceProvidesInitialState()
         corruptStoredStateStartsOff()
         try manualBoostAndDisplayStrengthsSurviveReload()
@@ -88,6 +89,32 @@ struct LightingStateTests {
         precondition(state.setEnabled(false) && state.mode == .off)
         precondition(state.setEnabled(true) && state.mode == .eclipse)
         precondition(state.setEnabled(false) && state.mode == .off)
+    }
+
+    private static func automationTransitionsRestoreManualIntent() {
+        withDefaults { defaults in
+            var boost = LightingState()
+            _ = boost.activate(.boost, keyboardBoost: 0.3125)
+            let target = DisplayBoostKey.persistent(UUID())
+            let on = StoredManualLighting(lighting: boost, displayBoost: DisplayBoostSession(singleDisplay: target))
+            var inactive = LightingState()
+            _ = inactive.selectEffect(.ring)
+            let off = StoredManualLighting(lighting: inactive, displayBoost: DisplayBoostSession())
+            let transitions: [(previous: LightingAutomation?, restoresOnManual: Bool)] = [
+                (nil, true), (.manual, false), (.power, true), (.ambient, true)
+            ]
+
+            for saved in [on, off] {
+                saved.save(to: defaults)
+                for transition in transitions {
+                    let restores = LightingAutomation.manual.shouldRestoreManualState(after: transition.previous)
+                    let restored = restores ? StoredManualLighting.load(from: defaults) : nil
+                    precondition(restored == (transition.restoresOnManual ? saved : nil))
+                    precondition(!LightingAutomation.power.shouldRestoreManualState(after: transition.previous))
+                    precondition(!LightingAutomation.ambient.shouldRestoreManualState(after: transition.previous))
+                }
+            }
+        }
     }
 
     private static func legacyStartupPreferenceProvidesInitialState() {

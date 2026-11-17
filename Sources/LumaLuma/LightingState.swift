@@ -46,6 +46,14 @@ enum LightingMode: String {
     }
 }
 
+enum LightingAutomation: Equatable {
+    case manual, power, ambient
+
+    func shouldRestoreManualState(after previous: Self?) -> Bool {
+        self == .manual && previous != .manual
+    }
+}
+
 struct LightingState: Equatable {
     private(set) var selectedEffect: LightingEffect = .boost
     private(set) var isEnabled = false

@@ -12,6 +12,7 @@ struct GammaBoostSessionTests {
         try await testTemporaryBeginFailuresCanBeRetried()
         try await testRejectedHelperDoesNotReportRestoreFailure()
         try await testExplicitRestorationKeepsTheDisplayAndOutcome()
+        try await testCancelledAcquisitionDoesNotReplayPriorConflict()
         try await testRestoreRemainsPendingUntilHelperExits()
         try await testPreparationAndInFlightChangesUseLatestStrength()
         try await testHeadroomRecoveryWaitsForRestoration()
@@ -62,7 +63,7 @@ struct GammaBoostSessionTests {
         for reply in ["busy", "unsupported"] {
             let helper = try makeRecordingHelper(beforeReply: """
             if [ "$command" = 'begin 42' ] && [ ! -f "$directory/attempted" ]; then
-                touch "$directory/attempted"
+                : > "$directory/attempted"
                 printf '\(reply)\\n'
                 sleep 0.4
                 exit 0
@@ -71,7 +72,7 @@ struct GammaBoostSessionTests {
             let directory = helper.deletingLastPathComponent()
             defer { try? FileManager.default.removeItem(at: directory) }
             let session = GammaBoostSession(helperURL: helper)
-            try await waitUntilActive(session, strength: 1)
+            try await waitUntilActive(session, strength: 1, fixture: "\(#function) reply=\(reply)")
             precondition(session.restorationStatus == nil)
             session.stop(waitForRestoration: true)
             precondition(readCommands(in: directory) == ["begin 42", "begin 42", "apply 1.45", "end"])
@@ -102,8 +103,12 @@ struct GammaBoostSessionTests {
 
     @MainActor
     private static func testExplicitRestorationKeepsTheDisplayAndOutcome() async throws {
-        let outcomes: [(String, GammaEndResult)] = [("ok", .restored), ("conflict", .conflict), ("error", .failed)]
-        for (reply, expected) in outcomes {
+        let outcomes: [(String, GammaEndResult, GammaEndResult, GammaBoostStatus?)] = [
+            ("ok", .restored, .restored, nil),
+            ("conflict", .conflict, .notNeeded, .conflict),
+            ("error", .failed, .failed, .restorationFailed),
+        ]
+        for (reply, expected, later, diagnostic) in outcomes {
             let helper = try makeRecordingHelper(beforeReply: """
             if [ "$command" = end ]; then
                 printf '\(reply)\\n'
@@ -135,17 +140,60 @@ struct GammaBoostSessionTests {
                 try await Task.sleep(for: .milliseconds(25))
             }
             precondition(completions == [expected, expected])
-            session.restore(on: 43) { precondition($0 == expected) }
+            session.restore(on: 43) { precondition($0 == later) }
+            precondition(session.restorationFailure(on: 43) == diagnostic)
             precondition(readCommands(in: directory) == ["begin 42", "end"])
             session.forgetDisplay(43)
             session.restore(on: 43) { precondition($0 == .notNeeded) }
+            precondition(session.restorationFailure(on: 43) == nil)
         }
+    }
+
+    @MainActor
+    private static func testCancelledAcquisitionDoesNotReplayPriorConflict() async throws {
+        let helper = try makeRecordingHelper(beforeReply: """
+        if [ "$command" = end ]; then
+            touch "$directory/ended"
+            printf 'conflict\\n'
+            exit 0
+        fi
+        if [ -f "$directory/ended" ]; then
+            printf 'busy\\n'
+            exit 0
+        fi
+        """)
+        let directory = helper.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = GammaBoostSession(helperURL: helper)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !session.needsTrigger, ContinuousClock.now < deadline {
+            _ = session.update(displayID: 42, strength: 1, currentHeadroom: 1.5, triggerReady: false)
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        precondition(session.needsTrigger)
+
+        var firstResult: GammaEndResult?
+        session.restore(on: 42) { firstResult = $0 }
+        while session.isRestoring, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        precondition(firstResult == .conflict)
+
+        precondition(session.update(displayID: 42, strength: 1, currentHeadroom: 1.5, triggerReady: false) == .starting)
+        var nextResult: GammaEndResult?
+        session.restore(on: 42) { nextResult = $0 }
+        while session.isRestoring, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        precondition(nextResult == .notNeeded)
+        precondition(session.restorationFailure(on: 42) == .conflict)
+        precondition(readCommands(in: directory) == ["begin 42", "end", "begin 42"])
     }
 
     @MainActor
     private static func testRestoreRemainsPendingUntilHelperExits() async throws {
         let helper = try makeHelper("""
-        directory="$(dirname "$0")"
+        directory="${0%/*}"
         IFS= read -r command || exit 1
         printf '%s\\n' "$command" >> "$directory/commands"
         printf 'ok\\n'
@@ -469,16 +517,17 @@ struct GammaBoostSessionTests {
     private static func waitUntilActive(
         _ session: GammaBoostSession,
         displayID: UInt32 = 42,
-        strength: Double
+        strength: Double,
+        fixture: String = #function
     ) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(6))
         while ContinuousClock.now < deadline {
             let status = session.update(displayID: displayID, strength: strength, currentHeadroom: 1.5, triggerReady: true)
             if status == .active { return }
-            precondition(status == .starting, "Unexpected terminal status \(status)")
+            precondition(status == .starting, "\(fixture): unexpected terminal status \(status)")
             try await Task.sleep(for: .milliseconds(25))
         }
-        preconditionFailure("HDR session did not become active")
+        preconditionFailure("\(fixture): HDR session did not become active")
     }
 
     private static let delayedRestoration = """
@@ -491,7 +540,7 @@ struct GammaBoostSessionTests {
 
     private static func makeRecordingHelper(beforeReply: String = "") throws -> URL {
         try makeHelper("""
-        directory="$(dirname "$0")"
+        directory="${0%/*}"
         while IFS= read -r command; do
             printf '%s\\n' "$command" >> "$directory/commands"
             \(beforeReply)

@@ -91,6 +91,10 @@ final class DisplayRenderer {
         gamma.isRestoring(on: displayID)
     }
 
+    func curveWarning(on displayID: CGDirectDisplayID) -> DisplayBoostStatus? {
+        gamma.restorationFailure(on: displayID).map { DisplayBoostStatus(gammaStatus: $0) }
+    }
+
     func restoreBrightness(on displayID: CGDirectDisplayID, completion: @escaping (GammaEndResult) -> Void) {
         overlays[displayID]?.removeBoost()
         if lastGamma?.displayID == displayID { lastGamma = nil }
@@ -244,8 +248,8 @@ final class DisplayRenderer {
         if path == .gamma, let lastGamma, lastGamma.displayID == id {
             return DisplayBoostStatus(gammaStatus: lastGamma.status)
         }
-        if let failure = gamma.restorationFailure(on: id) {
-            return DisplayBoostStatus(gammaStatus: failure)
+        if let warning = curveWarning(on: id), warning != .conflict || strength > 0 {
+            return warning
         }
         guard strength > 0 else { return .off }
         guard potential > 1 else { return .unsupported }

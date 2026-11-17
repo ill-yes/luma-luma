@@ -104,9 +104,14 @@ final class Preferences: ObservableObject {
         nativeBrightnessKeys = defaults.bool(forKey: "nativeBrightnessKeys")
         showBrightnessIndicator = defaults.object(forKey: "showBrightnessIndicator") as? Bool ?? true
         syncHardwareBrightness = defaults.bool(forKey: "syncHardwareBrightness")
-        shortcuts = defaults.data(forKey: "shortcuts").flatMap {
+        let storedShortcuts = defaults.data(forKey: "shortcuts").flatMap {
             try? JSONDecoder().decode([ShortcutAction: KeyBinding].self, from: $0)
         } ?? [:]
+        let normalizedShortcuts = ShortcutController.normalizedBindings(storedShortcuts)
+        shortcuts = normalizedShortcuts
+        if normalizedShortcuts != storedShortcuts, let data = try? JSONEncoder().encode(normalizedShortcuts) {
+            defaults.set(data, forKey: "shortcuts")
+        }
     }
 
     func setDisplayProfile(_ profile: DisplayProfile, for identity: UUID) {

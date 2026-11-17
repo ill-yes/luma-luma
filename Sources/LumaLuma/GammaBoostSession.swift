@@ -169,7 +169,7 @@ final class GammaBoostSession {
         if isRestoring(on: displayID) {
             cleanup?.completions.append(completion)
         } else {
-            completion(restorationResults[displayID] ?? .notNeeded)
+            completion(restorationResults[displayID]?.forLaterRequest ?? .notNeeded)
         }
     }
 
@@ -262,9 +262,10 @@ final class GammaBoostSession {
                         recoveryError = nil
                     }
                     if confirmed == .notNeeded, let prior = restorationResults[id] {
-                        confirmed = prior
+                        confirmed = prior.forLaterRequest
+                    } else {
+                        restorationResults[id] = confirmed
                     }
-                    restorationResults[id] = confirmed
                 }
                 finished.completions.forEach { $0(confirmed) }
                 onStatusChanged?()
@@ -301,6 +302,12 @@ enum GammaEndResult: Equatable {
     case restored
     case conflict
     case failed
+
+    fileprivate var forLaterRequest: Self {
+        // The helper relinquishes ownership on a conflict. A new native brightness
+        // request can proceed, while diagnostics retain the earlier outcome.
+        self == .conflict ? .notNeeded : self
+    }
 
     fileprivate var failureStatus: GammaBoostStatus? {
         switch self {

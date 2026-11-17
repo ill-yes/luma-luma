@@ -83,6 +83,12 @@ The installed `/Applications/Luma Luma.app` received macOS Accessibility permiss
 
 The user confirmed brightness-key operation with this installed app. The exact fine-step sequence was not fully captured. The detailed physical-key measurements above remain evidence from the earlier bundle identity.
 
+### Manual restoration on XDR hardware
+
+An isolated preview used the current controller and the helper from the local Apple silicon DMG on an M5 Pro MacBook Pro with macOS 27.2. Returning to Manual from active power automation restored the saved Off state and all 1,024 samples in each RGB channel. On battery, switching from the AC-only rule back to Manual restored the saved 12.5% Boost and reached a confirmed gain of `1.05625`.
+
+Simulated screen-sleep and wake notifications tested the controller against the actual display. Sleep restored the full baseline. Diagnostics kept the requested 12.5% strength while the gain was inactive, and wake restored the measured gain. Physical session lock and system sleep remain in the hardware checks below.
+
 ## 📦 Hosted CI and releases
 
 The first **Build and test** GitHub Actions run passed at commit `b26d61d`. It ran the existing tests, built the release app and verified its signature and bundled license. [CI result](https://github.com/ill-yes/luma-luma/actions/runs/43431125097)

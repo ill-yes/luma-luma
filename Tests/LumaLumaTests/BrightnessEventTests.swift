@@ -3,6 +3,7 @@ import IOKit.hidsystem
 
 @main
 struct BrightnessEventTests {
+    @MainActor
     static func main() {
         testNativePressKeepsItsReleaseAfterTakingOverRepeats()
         testConsumedPressHandsOffExactlyOnce()
@@ -10,7 +11,10 @@ struct BrightnessEventTests {
         testUnrelatedEventsPassThrough()
         testResetDiscardsOutstandingPresses()
         testReplacementPreservesMediaKeyData()
-        print("Brightness event routing checks passed.")
+        testSavedDuplicatesKeepFirstAction()
+        testAssignmentRejectsAnUnavailableSavedDuplicate()
+        testReplacementRegistersBeforeRemovingTheCurrentShortcut()
+        print("Brightness event routing and shortcut assignment checks passed.")
     }
 
     private static func testNativePressKeepsItsReleaseAfterTakingOverRepeats() {
@@ -111,6 +115,69 @@ struct BrightnessEventTests {
         precondition(decoded.data2 == original.data2)
         precondition(decoded.modifierFlags == original.modifierFlags)
         precondition(decoded.timestamp == original.timestamp)
+    }
+
+    private static func testSavedDuplicatesKeepFirstAction() {
+        let toggle = KeyBinding(keyCode: 1, modifiers: 256, displayName: "⌘A")
+        let duplicate = KeyBinding(keyCode: 1, modifiers: 256, displayName: "Command A")
+        let different = KeyBinding(keyCode: 1, modifiers: 512, displayName: "⇧A")
+        let saved: [ShortcutAction: KeyBinding] = [.increase: duplicate, .decrease: different, .toggle: toggle]
+        let normalized = ShortcutController.normalizedBindings(saved)
+        precondition(normalized == [.toggle: toggle, .decrease: different])
+        precondition(ShortcutController.normalizedBindings(normalized) == normalized)
+    }
+
+    @MainActor
+    private static func testAssignmentRejectsAnUnavailableSavedDuplicate() {
+        let current = KeyBinding(keyCode: 1, modifiers: 256, displayName: "⌘A")
+        let unavailable = KeyBinding(keyCode: 2, modifiers: 256, displayName: "⌘B")
+        let duplicate = KeyBinding(keyCode: 2, modifiers: 256, displayName: "Command B")
+        var attempts: [KeyBinding] = []
+        var removed: [KeyBinding] = []
+        let controller = ShortcutController(onAction: { _ in }, onBrightnessKey: { _, _ in false }) { binding, _ in
+            attempts.append(binding)
+            guard binding != unavailable else { return nil }
+            return { removed.append(binding) }
+        }
+        let saved: [ShortcutAction: KeyBinding] = [.toggle: current, .increase: unavailable]
+        precondition(controller.update(bindings: saved) != nil)
+        precondition(attempts == [current, unavailable])
+        precondition(controller.setBinding(duplicate, for: .toggle, bindings: saved)?.contains("already assigned") == true)
+        precondition(attempts == [current, unavailable] && removed.isEmpty)
+        controller.stop()
+        precondition(removed == [current])
+    }
+
+    @MainActor
+    private static func testReplacementRegistersBeforeRemovingTheCurrentShortcut() {
+        let current = KeyBinding(keyCode: 1, modifiers: 256, displayName: "⌘A")
+        let unavailable = KeyBinding(keyCode: 2, modifiers: 256, displayName: "⌘B")
+        let replacement = KeyBinding(keyCode: 3, modifiers: 256, displayName: "⌘C")
+        let relabeled = KeyBinding(keyCode: 3, modifiers: 256, displayName: "Command C")
+        var events: [String] = []
+        let controller = ShortcutController(onAction: { _ in }, onBrightnessKey: { _, _ in false }) { binding, _ in
+            events.append("Register \(binding.displayName)")
+            guard binding != unavailable else { return nil }
+            return { events.append("Remove \(binding.displayName)") }
+        }
+        let saved: [ShortcutAction: KeyBinding] = [.toggle: current]
+        precondition(controller.update(bindings: saved) == nil)
+        precondition(controller.update(bindings: saved) == nil)
+        precondition(controller.setBinding(unavailable, for: .toggle, bindings: saved) != nil)
+        precondition(controller.update(bindings: saved) == nil)
+        precondition(events == ["Register ⌘A", "Register ⌘B"])
+
+        precondition(controller.setBinding(replacement, for: .toggle, bindings: saved) == nil)
+        precondition(controller.update(bindings: [.toggle: replacement]) == nil)
+        precondition(controller.setBinding(relabeled, for: .toggle, bindings: [.toggle: replacement]) == nil)
+        precondition(controller.update(bindings: [.toggle: relabeled]) == nil)
+        precondition(events == ["Register ⌘A", "Register ⌘B", "Register ⌘C", "Remove ⌘A"])
+
+        precondition(controller.setBinding(nil, for: .toggle, bindings: [.toggle: relabeled]) == nil)
+        precondition(controller.update(bindings: [:]) == nil)
+        precondition(events.last == "Remove ⌘C" && events.count == 5)
+        precondition(controller.setBrightnessKeysEnabled(false) == .off)
+        controller.stop()
     }
 
     private static func unexpectedAdjustment(_ increase: Bool, _ fine: Bool) -> Bool {

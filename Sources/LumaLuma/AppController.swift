@@ -10,9 +10,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     let preferences = Preferences()
     @Published private var lighting = LightingState()
     @Published private(set) var report: DisplayRenderReport?
-    @Published private(set) var loginEnabled = false
+    @Published private var loginStatus: SMAppService.Status = .notRegistered
+    @Published private(set) var loginError: String?
     @Published private(set) var shortcutError: String?
-    @Published private(set) var loginMessage: String?
+    @Published private(set) var brightnessKeyStatus: BrightnessKeyStatus = .off
     @Published private(set) var paused = false
     @Published var settingsTab: SettingsTab = .general
     @Published private(set) var selectedDisplayID: CGDirectDisplayID?
@@ -25,6 +26,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     var selectedEffect: LightingEffect { lighting.selectedEffect }
     var isEnabled: Bool { lighting.isEnabled }
     var isRestoringCurve: Bool { renderer.isRestoringCurve }
+    var loginNeedsApproval: Bool { loginStatus == .requiresApproval }
+    var loginEnabled: Bool { loginStatus == .enabled || loginNeedsApproval }
     var hasActiveEffect: Bool {
         !paused && mode != .off && report?.displays.values.contains(where: \.hasActiveEffect) == true
     }
@@ -53,11 +56,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var powerTimer: Timer?
     private var powerSource: CFRunLoopSource?
     private var renderingQueued = false
-    private var automationResult: Bool?
+    @Published private var automationResult: Bool?
     private var previousRule: PowerRule?
     private var previousThreshold: Int?
     private var previousDefaultBoost: Double?
-    private var previousAmbientEnabled = false
+    private var previousAutomation: LightingAutomation?
     private var powerOwnsBoost = false
     private var ambientPolicy = AmbientBoostPolicy()
     private var ambientDisplayID: CGDirectDisplayID?
@@ -90,7 +93,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         updateLoginStatus()
         ready = true
         updateDisplayInventory()
-        updatePreferences(initial: true)
+        updatePreferences()
         if !pendingURLs.isEmpty {
             let urls = pendingURLs
             pendingURLs.removeAll()
@@ -122,6 +125,12 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard ready else { return }
+        updateLoginStatus()
+        updateBrightnessKeyStatus()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -197,6 +206,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func takeManualControl(suppressAuto: Bool = false) {
         let wasAutomatic = ambientDisplayID != nil
+        if wasAutomatic || powerOwnsBoost { objectWillChange.send() }
         ambientDisplayID = nil
         powerOwnsBoost = false
         if suppressAuto, preferences.ambientBoostEnabled {
@@ -216,6 +226,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         selectedDisplays.first { $0.id == selectedDisplayID }
     }
 
+    var selectedDisplayKey: DisplayBoostKey? { controlledDisplay?.boostKey }
     var controlDisplays: [DisplayControlChoice] { selectedDisplays.map(\.choice) }
 
     func selectDisplay(_ id: CGDirectDisplayID?) {
@@ -359,7 +370,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         let hasNativeControl = level != nil && hardware.supportsBrightnessControl(on: display.id)
         let requested = requestedBoost(for: display)
         let terminalFailure = report?.displays[display.id]?.boostStatus.isTerminalFailure == true
-        let pending = brightnessTransition.request.flatMap { $0.displayID == display.id ? $0.destination : nil }
+        let pending = brightnessTransition.request.flatMap {
+            $0.matches(displayID: display.id, identity: display.identity) ? $0.destination : nil
+        }
         if hasNativeControl, let level {
             let controlMode: BrightnessControl.Mode = display.supportsHDR ? .combined : .native
             let atMaximum = BrightnessControl.isNativeMaximum(level)
@@ -402,7 +415,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             setControlBoost(strength, on: display)
             return
         }
-        brightnessTransition.submit(destination, for: display.id)
+        brightnessTransition.submit(destination, for: display.id, identity: display.identity)
         if control.mode == .combined, !control.showsHDRRange, destination == .native(1) {
             // The current drag can use a synchronous readback before its next event.
             processBrightnessChange()
@@ -423,9 +436,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func processBrightnessChange(restored: Bool = false) {
         guard let request = brightnessTransition.request, brightnessTransition.restoration == nil else { return }
-        guard !paused, let selected = controlledDisplay, selected.id == request.displayID,
+        guard !paused, let selected = controlledDisplay,
+              request.matches(displayID: selected.id, identity: selected.identity),
               let display = ConnectedDisplay.current().first(where: {
-                  $0.id == selected.id && $0.identity == selected.identity
+                  request.matches(displayID: $0.id, identity: $0.identity)
               }) else {
             brightnessTransition.cancel()
             return
@@ -536,10 +550,29 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         updateRefreshTimer()
     }
 
+    var diagnosticEffectSource: String {
+        guard isEnabled else { return "No active request" }
+        if ambientDisplayID != nil { return "Auto-Boost (ambient light)" }
+        return powerOwnsBoost ? "Power rule" : "Manual"
+    }
+
+    var diagnosticEffectStatus: String? {
+        if paused { return "Paused while the display is inactive" }
+        if isRestoringCurve { return "Restoring display…" }
+        if isWaitingForBoostDisplay { return "Waiting for the Boost display" }
+        if mode == .off {
+            if preferences.ambientBoostEnabled { return ambientStatus }
+            if preferences.powerRule != .manual, automationResult == false { return "Waiting for the power rule" }
+        }
+        return nil
+    }
+
     var diagnosticRows: [DisplayDiagnosticRow] {
         let participating = Set(selectedDisplays.map(\.id))
         return displays.map { display in
             let result = paused ? nil : report?.displays[display.id]
+            let requested = participating.contains(display.id) ? requestedBoost(for: display) : 0
+            let curveWarning = renderer.curveWarning(on: display.id)?.title
             let status: String
             if paused {
                 status = "Display inactive"
@@ -551,38 +584,44 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                 status = "Excluded from effects"
             } else if result?.hasActiveEffect == true {
                 status = mode.title
+            } else if result == nil, requested > 0 {
+                status = "Preparing HDR…"
             } else {
                 status = "Standard display brightness"
             }
             return DisplayDiagnosticRow(
                 id: display.id, name: display.screen.localizedName, nativeBrightness: nativeLevels[display.id],
-                requestedBoost: participating.contains(display.id) ? result?.requestedBoost ?? 0 : 0,
+                requestedBoost: requested,
                 appliedGain: result?.appliedGain,
                 currentHeadroom: result?.currentHeadroom ?? Double(display.screen.maximumExtendedDynamicRangeColorComponentValue),
                 potentialHeadroom: result?.potentialHeadroom ?? Double(display.screen.maximumPotentialExtendedDynamicRangeColorComponentValue),
                 path: result?.boostPath == .gamma ? "RGB transfer curve" :
                     (result?.boostPath == .overlay ? "Metal overlay" : nil),
-                status: status
+                status: status, curveWarning: curveWarning == status ? nil : curveWarning
             )
         }
     }
 
     func copyDiagnostics() {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development build"
         let system = ProcessInfo.processInfo.operatingSystemVersion
         var lines = [
-            "Luma Luma \(version)",
+            "Luma Luma \(AppVersion.label)",
             "macOS \(system.majorVersion).\(system.minorVersion).\(system.patchVersion)",
-            ambientStatus
+            "Effect source: \(diagnosticEffectSource)"
         ]
+        if let status = diagnosticEffectStatus { lines.append("Status: \(status)") }
+        if preferences.ambientBoostEnabled, diagnosticEffectStatus != ambientStatus { lines.append(ambientStatus) }
         for (index, row) in diagnosticRows.enumerated() {
             let builtIn = displays.first(where: { $0.id == row.id })?.builtIn == true
             lines.append("")
             lines.append("Display \(index + 1) (\(builtIn ? "built-in" : "external"))")
             lines.append(row.status)
+            if let warning = row.curveWarning { lines.append("Curve warning: \(warning)") }
+            let appliedGain = row.appliedGain.map { String(format: "%.3f", $0) } ?? "Unavailable"
+            lines.append("Applied factor: \(paused ? "Inactive" : appliedGain)")
             let fields: [(String, Double?)] = [
                 ("macOS brightness", row.nativeBrightness), ("Requested boost", row.requestedBoost),
-                ("Applied factor", row.appliedGain), ("Current HDR headroom", row.currentHeadroom),
+                ("Current HDR headroom", row.currentHeadroom),
                 ("Potential HDR headroom", row.potentialHeadroom)
             ]
             for (label, value) in fields {
@@ -604,6 +643,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func setLoginEnabled(_ enabled: Bool) {
+        var registrationError: String?
         do {
             if enabled {
                 if SMAppService.mainApp.status != .requiresApproval {
@@ -612,12 +652,28 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             } else {
                 try SMAppService.mainApp.unregister()
             }
-            loginMessage = SMAppService.mainApp.status == .requiresApproval
-                ? "Approve Luma Luma in System Settings → Login Items." : nil
         } catch {
-            loginMessage = error.localizedDescription
+            registrationError = error.localizedDescription
         }
         updateLoginStatus()
+        loginError = registrationError
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    func setShortcutBinding(_ binding: KeyBinding?, for action: ShortcutAction) {
+        let error = shortcuts.setBinding(binding, for: action, bindings: preferences.shortcuts)
+        shortcutError = error
+        if error == nil, preferences.shortcuts[action] != binding {
+            preferences.shortcuts[action] = binding
+        }
+    }
+
+    func requestBrightnessKeyPermission() {
+        shortcuts.requestBrightnessKeyPermission()
+        updateBrightnessKeyStatus()
     }
 
     @objc func showPreferences() {
@@ -628,6 +684,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
         updateLoginStatus()
+        updateBrightnessKeyStatus()
         NSApplication.shared.activate(ignoringOtherApps: true)
         preferencesWindow?.makeKeyAndOrderFront(nil)
         queueRefresh()
@@ -747,11 +804,14 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func updateLoginStatus() {
-        let enabled = SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval
-        if enabled != loginEnabled { loginEnabled = enabled }
+        let status = SMAppService.mainApp.status
+        if status != loginStatus {
+            loginStatus = status
+            loginError = nil
+        }
     }
 
-    private func updatePreferences(initial: Bool = false) {
+    private func updatePreferences() {
         guard ready else { return }
         reconcileControlTarget()
         if let previousDefaultBoost, previousDefaultBoost != preferences.boost {
@@ -771,11 +831,18 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
         updateShortcuts()
         if !preferences.showBrightnessIndicator { brightnessIndicator?.hide() }
-        let ambientChanged = previousAmbientEnabled != preferences.ambientBoostEnabled
+        let automation: LightingAutomation
+        if preferences.ambientBoostEnabled {
+            automation = .ambient
+        } else {
+            automation = preferences.powerRule == .manual ? .manual : .power
+        }
+        let ambientChanged = (previousAutomation == .ambient) != (automation == .ambient)
+        let restoreManual = automation.shouldRestoreManualState(after: previousAutomation)
         let ruleChanged = previousRule != preferences.powerRule || previousThreshold != preferences.batteryThreshold
         previousRule = preferences.powerRule
         previousThreshold = preferences.batteryThreshold
-        previousAmbientEnabled = preferences.ambientBoostEnabled
+        previousAutomation = automation
         if ambientChanged {
             ambientPolicy = AmbientBoostPolicy()
             ambientFailure = nil
@@ -787,27 +854,37 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                 setAmbientStatus("Automatic boost is off")
             }
         }
-        if ambientChanged || ruleChanged {
+        if restoreManual {
+            restoreManualLighting()
+        } else if ambientChanged || ruleChanged {
             automationResult = nil
             refreshAutomation()
-        }
-        if initial, !preferences.ambientBoostEnabled, preferences.powerRule == .manual {
-            let saved = preferences.manualLighting
-            setLighting(saved.lighting)
-            displayBoost = saved.displayBoost
         }
         queueRefresh()
         updateRefreshTimer()
     }
 
+    private func restoreManualLighting() {
+        brightnessTransition.cancel()
+        brightnessError = nil
+        automationResult = nil
+        powerOwnsBoost = false
+        ambientDisplayID = nil
+        let saved = preferences.manualLighting
+        setLighting(saved.lighting)
+        displayBoost = saved.displayBoost
+    }
+
     private func updateShortcuts() {
-        var error = shortcuts.update(bindings: preferences.shortcuts)
-        let needsNativeKeys = preferences.nativeBrightnessKeys || preferences.syncHardwareBrightness
-        if !shortcuts.setBrightnessKeysEnabled(needsNativeKeys), needsNativeKeys {
-            let missing = "Allow Luma Luma in Privacy & Security → Accessibility, then turn the option off and back on."
-            error = [error, missing].compactMap { $0 }.joined(separator: " ")
-        }
+        let error = shortcuts.update(bindings: preferences.shortcuts)
         if error != shortcutError { shortcutError = error }
+        updateBrightnessKeyStatus()
+    }
+
+    private func updateBrightnessKeyStatus() {
+        let needsNativeKeys = preferences.nativeBrightnessKeys || preferences.syncHardwareBrightness
+        let status = shortcuts.setBrightnessKeysEnabled(needsNativeKeys)
+        if status != brightnessKeyStatus { brightnessKeyStatus = status }
     }
 
     private func updateRefreshTimer() {
@@ -1172,9 +1249,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     @objc private func displaysChanged() {
-        brightnessTransition.cancel()
         brightnessError = nil
         updateDisplayInventory()
+        let selected = controlledDisplay
+        brightnessTransition.reconcileDisplayChange(selectedDisplayID: selected?.id, identity: selected?.identity)
         refreshAutomation()
         queueRefresh()
         updateRefreshTimer()

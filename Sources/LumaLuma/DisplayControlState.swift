@@ -124,6 +124,7 @@ struct DisplayDiagnosticRow: Identifiable, Equatable {
     let potentialHeadroom: Double?
     let path: String?
     let status: String
+    let curveWarning: String?
 }
 
 enum DisplayBoostKey: Hashable {
@@ -179,15 +180,28 @@ enum BrightnessDestination: Equatable {
 struct BrightnessTransition {
     struct Request: Equatable {
         let displayID: UInt32
+        let identity: UUID?
         let destination: BrightnessDestination
+
+        func matches(displayID: UInt32, identity: UUID?) -> Bool {
+            self.displayID == displayID && self.identity == identity
+        }
     }
 
     private(set) var request: Request?
     private(set) var restoration: UUID?
 
-    mutating func submit(_ destination: BrightnessDestination, for displayID: UInt32) {
-        if request?.displayID != displayID { cancel() }
-        request = Request(displayID: displayID, destination: destination)
+    mutating func submit(_ destination: BrightnessDestination, for displayID: UInt32, identity: UUID?) {
+        if request?.matches(displayID: displayID, identity: identity) != true { cancel() }
+        request = Request(displayID: displayID, identity: identity, destination: destination)
+    }
+
+    mutating func reconcileDisplayChange(selectedDisplayID: UInt32?, identity: UUID?) {
+        guard let request else { return }
+        // A display ID alone cannot establish identity after a topology change.
+        if selectedDisplayID != request.displayID || identity == nil || identity != request.identity {
+            cancel()
+        }
     }
 
     mutating func awaitRestoration() -> UUID {

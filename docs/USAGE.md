@@ -76,8 +76,8 @@ Built-in full-display Boost uses a different rendering path from external displa
 ## ⌨️ MacBook brightness keys
 
 1. Open **Settings… → Shortcuts** and enable **Use display brightness keys**.
-2. Grant Luma Luma access in **System Settings → Privacy & Security → Accessibility**. On German-language macOS 27, the pane is named **Gerätesteuerung und Datenzugriff**.
-3. Turn **Use display brightness keys** off and on to reconnect the event tap.
+2. If the option shows **Accessibility permission required**, choose **Request Accessibility Access…** and grant access in **System Settings → Privacy & Security → Accessibility**. On German-language macOS 27, the pane is named **Gerätesteuerung und Datenzugriff**.
+3. Return to Luma Luma. **Keyboard access active** confirms that the app connected to the brightness keys.
 
 When moving to the renamed app, grant access to **Luma Luma** again and update existing URL-based shortcuts to the `lumaluma://` scheme.
 
@@ -100,13 +100,13 @@ The **General** tab provides startup and power controls.
 
 | Setting | Behavior |
 | --- | --- |
-| **Open at login** | Starts Luma Luma when you sign in. Move the app to Applications before enabling it. |
+| **Open at login** | Starts Luma Luma when you sign in. Move the app to Applications before enabling it. If macOS requests approval, use **Open Login Items…** below the switch. |
 | **Show icon in Dock** | Adds a Dock icon alongside the menu bar controls. |
 | **Enable boost → Manual** | Uses your manual selection and switch. |
 | **Enable boost → On power adapter** | Enables Boost on external power and disables Boost on battery when the power condition changes. |
 | **Enable boost → On power or above a battery level** | Enables Boost on external power or above the selected battery threshold when the power condition changes. |
 
-With the power rule set to **Manual** and Auto-Boost turned off, Luma Luma remembers whether you left Boost on or off and restores active Boost when it opens. With **Open at login** enabled, this also applies when you sign in after restarting your Mac.
+With the power rule set to **Manual** and Auto-Boost turned off, Luma Luma restores your last manual effect and on/off state. This happens when the app opens and when you return to those settings. With **Open at login** enabled, it also applies when you sign in after restarting your Mac.
 
 Power automation changes Off and Boost states. An active Eclipse or Ring Light effect keeps its selection.
 
@@ -138,9 +138,9 @@ Use the **Open URLs** action in the Shortcuts app with one of these commands.
 
 ## 🧭 Status and troubleshooting
 
-Open **Diagnostics…** from the menu bar or choose **Settings… → Diagnostics**. Each display shows its macOS brightness, requested Boost, render path, applied gain and current and potential HDR headroom. The gain describes the confirmed RGB curve or presented overlay. The status explains preparation, restoration and known limitations.
+Open **Diagnostics…** from the menu bar or choose **Settings… → Diagnostics**. The effect source shows whether the request came from manual control, power automation or ambient light. Each display shows its macOS brightness, requested Boost, render path, applied gain and current and potential HDR headroom. During a pause the request stays visible and the gain is marked inactive. The status explains preparation, restoration and known limitations.
 
-**Copy Diagnostics** copies the app and macOS versions, sensor status and per-display values to the clipboard. The report identifies displays by number and built-in or external type, omitting display names, UUIDs, serial numbers, window titles and local paths.
+**Copy Diagnostics** copies the app version and build number, macOS version, effect source, status and per-display values to the clipboard. The report identifies displays by number and built-in or external type, omitting display names, UUIDs, serial numbers, window titles and local paths.
 
 | Status | What to check |
 | --- | --- |
@@ -151,7 +151,7 @@ Open **Diagnostics…** from the menu bar or choose **Settings… → Diagnostic
 | **No HDR display available** | Select an HDR-capable display. Eclipse and Ring Light can still be used on other screens. |
 | **Waiting for a frontmost window** | Focus a standard application window inside a selected display. |
 | **macOS is limiting HDR headroom** | Check the display preset, native brightness, power state and temperature. |
-| **Display curve changed by another app** | Close other display-curve utilities, then turn Boost off and on. |
+| **Display curve changed by another app** | Try the native brightness adjustment again after restoration finishes. To retry HDR Boost, close other display-curve utilities and turn Boost off and on. |
 | **HDR renderer unavailable** or **Could not apply the display curve** | Check the selected display and native brightness, then turn Boost off and on to start a fresh attempt. |
 | **Could not confirm display curve restoration** | Keep the display connected and allow the helper to finish. Use **Copy Diagnostics** to include display status in a bug report if the problem persists. |
 

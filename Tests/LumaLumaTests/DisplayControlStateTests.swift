@@ -11,6 +11,8 @@ struct DisplayControlStateTests {
         restorationUsesLatestRequestForSameDisplay()
         cancelledRestorationCannotCompleteReplacementRequest()
         switchedDisplayIgnoresPreviousRestoration()
+        unrelatedDisplayChangeKeepsPendingRestoration()
+        changedOrUnknownDisplayCancelsPendingRestoration()
         addingBoostOnAnotherDisplayPreservesExistingTargets()
         identifiedBoostSurvivesDisplayReassignment()
         disconnectedBoostOverridesLastOnlyForTheirConnection()
@@ -82,41 +84,66 @@ struct DisplayControlStateTests {
 
     private static func restorationUsesLatestRequestForSameDisplay() {
         var transition = BrightnessTransition()
-        transition.submit(.native(0.75), for: 1)
+        transition.submit(.native(0.75), for: 1, identity: nil)
         let token = transition.awaitRestoration()
 
-        transition.submit(.native(0.5), for: 1)
-        transition.submit(.boost(0.25), for: 1)
+        transition.submit(.native(0.5), for: 1, identity: nil)
+        transition.submit(.boost(0.25), for: 1, identity: nil)
 
         precondition(transition.restoration == token)
-        precondition(transition.finishRestoration(token) == .init(displayID: 1, destination: .boost(0.25)))
+        precondition(transition.finishRestoration(token) == .init(displayID: 1, identity: nil, destination: .boost(0.25)))
         precondition(transition.restoration == nil)
         precondition(transition.finishRestoration(token) == nil)
     }
 
     private static func cancelledRestorationCannotCompleteReplacementRequest() {
         var transition = BrightnessTransition()
-        transition.submit(.native(0.75), for: 1)
+        transition.submit(.native(0.75), for: 1, identity: nil)
         let cancelled = transition.awaitRestoration()
         transition.cancel()
         precondition(transition.request == nil && transition.restoration == nil)
 
-        transition.submit(.native(0.25), for: 1)
+        transition.submit(.native(0.25), for: 1, identity: nil)
         let replacement = transition.awaitRestoration()
         precondition(transition.finishRestoration(cancelled) == nil)
         precondition(transition.restoration == replacement)
-        precondition(transition.finishRestoration(replacement) == .init(displayID: 1, destination: .native(0.25)))
+        precondition(transition.finishRestoration(replacement) == .init(displayID: 1, identity: nil, destination: .native(0.25)))
     }
 
     private static func switchedDisplayIgnoresPreviousRestoration() {
         var transition = BrightnessTransition()
-        transition.submit(.native(0.75), for: 1)
+        transition.submit(.native(0.75), for: 1, identity: nil)
         let previousDisplay = transition.awaitRestoration()
-        transition.submit(.native(0.25), for: 2)
+        transition.submit(.native(0.25), for: 2, identity: nil)
 
         precondition(transition.restoration == nil)
         precondition(transition.finishRestoration(previousDisplay) == nil)
-        precondition(transition.request == .init(displayID: 2, destination: .native(0.25)))
+        precondition(transition.request == .init(displayID: 2, identity: nil, destination: .native(0.25)))
+    }
+
+    private static func unrelatedDisplayChangeKeepsPendingRestoration() {
+        let identity = UUID()
+        var transition = BrightnessTransition()
+        transition.submit(.native(0.75), for: 1, identity: identity)
+        let token = transition.awaitRestoration()
+        transition.reconcileDisplayChange(selectedDisplayID: 1, identity: identity)
+        precondition(transition.finishRestoration(token) ==
+            .init(displayID: 1, identity: identity, destination: .native(0.75)))
+    }
+
+    private static func changedOrUnknownDisplayCancelsPendingRestoration() {
+        let identity = UUID()
+        let changes: [(UUID?, UInt32?, UUID?)] = [
+            (identity, 1, UUID()), (identity, 2, identity), (identity, nil, nil), (nil, 1, nil),
+        ]
+        for (original, selected, current) in changes {
+            var transition = BrightnessTransition()
+            transition.submit(.native(0.75), for: 1, identity: original)
+            let token = transition.awaitRestoration()
+            transition.reconcileDisplayChange(selectedDisplayID: selected, identity: current)
+            precondition(transition.request == nil)
+            precondition(transition.finishRestoration(token) == nil)
+        }
     }
 
     private static func profilesRoundTripWithIndependentOverrides() throws {

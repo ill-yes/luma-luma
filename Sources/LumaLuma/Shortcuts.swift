@@ -22,6 +22,14 @@ struct KeyBinding: Codable, Hashable {
     let keyCode: UInt32
     let modifiers: UInt32
     let displayName: String
+
+    fileprivate func usesSameKeys(as other: Self) -> Bool {
+        keyCode == other.keyCode && modifiers == other.modifiers
+    }
+}
+
+enum BrightnessKeyStatus: Equatable {
+    case off, ready, permissionRequired, unavailable
 }
 
 struct BrightnessKeyPresses {
@@ -104,14 +112,17 @@ struct BrightnessKeyPresses {
 final class ShortcutController {
     private static let signature: OSType = 0x4C4C4748
 
+    typealias RegisterHotKey = (_ binding: KeyBinding, _ id: UInt32) -> (() -> Void)?
+
     private struct Registration {
-        let binding: KeyBinding
+        var binding: KeyBinding
         let id: UInt32
-        let reference: EventHotKeyRef
+        let unregister: () -> Void
     }
 
     private let onAction: (ShortcutAction) -> Void
     private let onBrightnessKey: (Bool, Bool) -> Bool
+    private let registerHotKey: RegisterHotKey?
     private var registrations: [ShortcutAction: Registration] = [:]
     private var pressedToggleID: UInt32?
     private var handler: EventHandlerRef?
@@ -122,61 +133,115 @@ final class ShortcutController {
 
     init(
         onAction: @escaping (ShortcutAction) -> Void,
-        onBrightnessKey: @escaping (_ increase: Bool, _ fine: Bool) -> Bool
+        onBrightnessKey: @escaping (_ increase: Bool, _ fine: Bool) -> Bool,
+        registerHotKey: RegisterHotKey? = nil
     ) {
         self.onAction = onAction
         self.onBrightnessKey = onBrightnessKey
+        self.registerHotKey = registerHotKey
+    }
+
+    nonisolated static func normalizedBindings(_ bindings: [ShortcutAction: KeyBinding]) -> [ShortcutAction: KeyBinding] {
+        var normalized: [ShortcutAction: KeyBinding] = [:]
+        for action in ShortcutAction.allCases {
+            guard let binding = bindings[action],
+                  !normalized.values.contains(where: { $0.usesSameKeys(as: binding) }) else { continue }
+            normalized[action] = binding
+        }
+        return normalized
+    }
+
+    func setBinding(_ binding: KeyBinding?, for action: ShortcutAction, bindings: [ShortcutAction: KeyBinding]) -> String? {
+        guard let binding else {
+            removeRegistration(for: action)
+            return nil
+        }
+        if ShortcutAction.allCases.contains(where: { other in
+            other != action && (bindings[other]?.usesSameKeys(as: binding) == true ||
+                                registrations[other]?.binding.usesSameKeys(as: binding) == true)
+        }) {
+            return duplicateError(for: binding)
+        }
+        if let previous = registrations[action], previous.binding.usesSameKeys(as: binding) {
+            registrations[action]?.binding = binding
+            return nil
+        }
+        guard installHandlerIfNeeded() else { return "Global shortcuts are unavailable." }
+        guard let registration = register(binding) else { return registrationError(for: binding, action: action) }
+        removeRegistration(for: action)
+        registrations[action] = registration
+        return nil
     }
 
     func update(bindings: [ShortcutAction: KeyBinding]) -> String? {
-        for action in ShortcutAction.allCases where registrations[action]?.binding != bindings[action] {
-            if let registration = registrations.removeValue(forKey: action) {
-                UnregisterEventHotKey(registration.reference)
-                if pressedToggleID == registration.id { pressedToggleID = nil }
-            }
+        let normalized = Self.normalizedBindings(bindings)
+        for action in ShortcutAction.allCases where registrations[action]?.binding != normalized[action] {
+            removeRegistration(for: action)
         }
-
-        guard !bindings.isEmpty else { return nil }
+        guard !normalized.isEmpty else { return nil }
         guard installHandlerIfNeeded() else { return "Global shortcuts are unavailable." }
-
         var errors: [String] = []
         for action in ShortcutAction.allCases {
-            guard registrations[action] == nil, let binding = bindings[action] else { continue }
-            let duplicate = registrations.values.contains {
-                $0.binding.keyCode == binding.keyCode && $0.binding.modifiers == binding.modifiers
-            }
-            if duplicate {
-                errors.append("\(binding.displayName) is already assigned in Luma Luma.")
+            guard let binding = bindings[action], registrations[action] == nil else { continue }
+            guard normalized[action] != nil else {
+                errors.append(duplicateError(for: binding))
                 continue
             }
-
-            var reference: EventHotKeyRef?
-            let id = nextID
-            nextID &+= 1
-            let status = RegisterEventHotKey(
-                binding.keyCode, binding.modifiers, EventHotKeyID(signature: Self.signature, id: id),
-                GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &reference
-            )
-            if status == noErr, let reference {
-                registrations[action] = Registration(binding: binding, id: id, reference: reference)
+            if let registration = register(binding) {
+                registrations[action] = registration
             } else {
-                errors.append("Couldn’t register \(binding.displayName) for \(action.title.lowercased()).")
+                errors.append(registrationError(for: binding, action: action))
             }
         }
         return errors.isEmpty ? nil : errors.joined(separator: " ")
     }
 
-    func setBrightnessKeysEnabled(_ enabled: Bool) -> Bool {
+    private func register(_ binding: KeyBinding) -> Registration? {
+        let id = nextID
+        nextID &+= 1
+        if let registerHotKey {
+            return registerHotKey(binding, id).map { Registration(binding: binding, id: id, unregister: $0) }
+        }
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            binding.keyCode, binding.modifiers, EventHotKeyID(signature: Self.signature, id: id),
+            GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &reference
+        )
+        guard status == noErr, let reference else { return nil }
+        return Registration(binding: binding, id: id, unregister: { _ = UnregisterEventHotKey(reference) })
+    }
+
+    private func removeRegistration(for action: ShortcutAction) {
+        guard let registration = registrations.removeValue(forKey: action) else { return }
+        registration.unregister()
+        if pressedToggleID == registration.id { pressedToggleID = nil }
+    }
+
+    private func duplicateError(for binding: KeyBinding) -> String {
+        "\(binding.displayName) is already assigned in Luma Luma."
+    }
+
+    private func registrationError(for binding: KeyBinding, action: ShortcutAction) -> String {
+        "Couldn’t register \(binding.displayName) for \(action.title.lowercased())."
+    }
+
+    func requestBrightnessKeyPermission() {
+        guard !AXIsProcessTrusted() else { return }
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
+    }
+
+    func setBrightnessKeysEnabled(_ enabled: Bool) -> BrightnessKeyStatus {
         guard enabled else {
             removeBrightnessTap()
-            return true
+            return .off
         }
         guard AXIsProcessTrusted() else {
             removeBrightnessTap()
-            return false
+            return .permissionRequired
         }
         if let brightnessTap, CGEvent.tapIsEnabled(tap: brightnessTap) {
-            return true
+            return .ready
         }
         removeBrightnessTap()
 
@@ -227,13 +292,21 @@ final class ShortcutController {
                 }
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ), let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else { return false }
+        ) else { return .unavailable }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CFMachPortInvalidate(tap)
+            return .unavailable
+        }
 
         brightnessTap = tap
         brightnessSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        return true
+        guard CGEvent.tapIsEnabled(tap: tap) else {
+            removeBrightnessTap()
+            return .unavailable
+        }
+        return .ready
     }
 
     func stop() {
@@ -246,7 +319,7 @@ final class ShortcutController {
     }
 
     private func installHandlerIfNeeded() -> Bool {
-        guard handler == nil else { return true }
+        guard handler == nil, registerHotKey == nil else { return true }
         let events = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
@@ -422,8 +495,7 @@ private final class ShortcutRecordButton: NSButton {
     }
 
     func finish(with binding: KeyBinding) {
-        isRecording = false
-        bindingTitle = binding.displayName
+        cancelRecording()
         onRecord?(binding)
     }
 

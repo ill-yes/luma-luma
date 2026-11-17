@@ -236,6 +236,15 @@ struct PreferencesView: View {
                     get: { controller.loginEnabled },
                     set: { controller.setLoginEnabled($0) }
                 ))
+                if controller.loginNeedsApproval {
+                    Label("Waiting for macOS approval", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                    Button("Open Login Items…") { controller.openLoginItemsSettings() }
+                }
+                if let error = controller.loginError {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Show icon in Dock", isOn: $preferences.showDockIcon)
             }
 
@@ -297,6 +306,7 @@ struct PreferencesView: View {
 
             Section {
                 Toggle("Sync hardware brightness", isOn: $preferences.syncHardwareBrightness)
+                if preferences.syncHardwareBrightness { brightnessKeySetup }
             } footer: {
                 Text("Applies when using brightness keys on supported Apple displays.")
             }
@@ -394,21 +404,22 @@ struct PreferencesView: View {
                     LabeledContent(action.title) {
                         ShortcutRecorder(binding: Binding(
                             get: { preferences.shortcuts[action] },
-                            set: { preferences.shortcuts[action] = $0 }
+                            set: { controller.setShortcutBinding($0, for: action) }
                         ))
                     }
                 }
-            }
-
-            Section {
-                Toggle("Use display brightness keys", isOn: $preferences.nativeBrightnessKeys)
                 if let shortcutError = controller.shortcutError {
                     Label(shortcutError, systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section {
+                Toggle("Use display brightness keys", isOn: $preferences.nativeBrightnessKeys)
+                if preferences.nativeBrightnessKeys { brightnessKeySetup }
             } footer: {
-                Text("Keep pressing the brightness-up key at maximum brightness to start HDR on a supported display. Allow Luma Luma in System Settings › Privacy & Security › Accessibility, then turn this option off and back on.")
+                Text("Press the brightness-up key at maximum brightness to start HDR on a supported display.")
             }
 
             Section {
@@ -417,27 +428,55 @@ struct PreferencesView: View {
         }
         .formStyle(.grouped)
     }
+
+    @ViewBuilder
+    private var brightnessKeySetup: some View {
+        switch controller.brightnessKeyStatus {
+        case .off:
+            EmptyView()
+        case .ready:
+            Label("Keyboard access active", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        case .permissionRequired:
+            Label("Accessibility permission required", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+            Button("Request Accessibility Access…") { controller.requestBrightnessKeyPermission() }
+        case .unavailable:
+            Label("Couldn’t connect to the brightness keys", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
 private struct DisplayDiagnosticsView: View {
     @ObservedObject var controller: AppController
 
     var body: some View {
+        let rows = controller.diagnosticRows
         VStack(spacing: 0) {
             Form {
-                if controller.diagnosticRows.isEmpty {
+                Section {
+                    LabeledContent("Effect source", value: controller.diagnosticEffectSource)
+                    if let status = controller.diagnosticEffectStatus {
+                        LabeledContent("Status", value: status)
+                    }
+                }
+                if rows.isEmpty {
                     Text("No active displays detected")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(controller.diagnosticRows) { row in
+                ForEach(rows) { row in
                     Section(row.name) {
                         LabeledContent("Status", value: row.status)
+                        if let warning = row.curveWarning {
+                            LabeledContent("Curve warning", value: warning)
+                        }
                         LabeledContent("macOS brightness", value: percentage(row.nativeBrightness))
                         LabeledContent("Requested Boost", value: percentage(row.requestedBoost))
                         if let path = row.path {
                             LabeledContent("Render path", value: path)
                         }
-                        LabeledContent("Applied gain", value: factor(row.appliedGain))
+                        LabeledContent("Applied gain", value: controller.paused ? "Inactive" : factor(row.appliedGain))
                         LabeledContent("Current HDR headroom", value: factor(row.currentHeadroom))
                         LabeledContent("Potential HDR headroom", value: factor(row.potentialHeadroom))
                     }

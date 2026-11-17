@@ -87,7 +87,7 @@ iconutil --convert icns dist/LumaLuma.iconset --output Packaging/LumaLuma.icns
 
 ## 💡 Effect state and rendering
 
-`LightingState` stores the selected effect, enabled state and temporary keyboard strength. Selecting an effect while disabled prepares it for the next activation. Repeating the same selection or enabled value has no effect. A manual restart uses the saved slider strength.
+`LightingState` stores the selected effect, enabled state and temporary keyboard strength. Selecting an effect while disabled prepares it for the next activation. Turning an effect off and on again uses its saved profile and default values. Entry into Manual restores the stored manual session, including keyboard Boost strength and its display target.
 
 The controller starts renderer cleanup synchronously on deactivation or effect changes. A quick off/on sequence therefore releases the previous session before a new session acquires the helper.
 
@@ -101,9 +101,9 @@ External, half-display and front-window Boost use Metal compositing overlays. Fr
 
 The controller resolves the display group and individual participation before it builds a render target for each selected display. Optional profile fields override the global effect values. Preferences store profiles keyed by unique Core Graphics display UUID. A display without a unique UUID gets overrides for the current connection. Native brightness is read from the display on reconnect.
 
-The slider uses the Apple brightness adapter for native levels. Crossing into HDR writes native maximum when needed and reads it back before requesting Boost for the target. Returning to the native range removes that display's Boost. For the built-in RGB curve, an explicit restoration result controls the native write. The controller waits for a confirmed restore or a result indicating that no restoration is needed. Conflicts and unconfirmed restores cancel the write.
+The slider uses the Apple brightness adapter for native levels. Crossing into HDR writes native maximum when needed and reads it back before requesting Boost for the target. Returning to the native range removes that display's Boost. The controller waits for a confirmed restore or a result indicating that no restoration is needed. A conflict cancels the waiting request and stays visible in Diagnostics. A fresh native request can proceed after the helper gives up ownership. An unconfirmed restore continues to block native writes through the slider.
 
-The pending request tracks the latest slider value. The controller checks the selected display and its identity again before applying a deferred change. Target changes, display reconfiguration and pause events invalidate outstanding slider requests. Other monitors can keep rendering throughout a transition.
+The pending request tracks the latest slider value. The controller checks the selected display and its identity again before applying a deferred change. A display reconfiguration preserves the request when the selected target keeps its runtime ID and unique UUID. Target changes, ambiguous identity after reconfiguration and pause events invalidate outstanding requests. Other monitors can keep rendering throughout a transition.
 
 The renderer reports each target's requested strength, confirmed RGB curve gain or presented Metal overlay gain, and current and potential EDR headroom. The Diagnostics tab shows these values and the render status. The clipboard report omits identifying display information and local paths.
 
